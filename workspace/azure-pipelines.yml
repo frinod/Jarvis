@@ -1,0 +1,13 @@
+# ADO pipeline definition
+trigger:
+- main
+
+pool:
+  vmImage: ubuntu-latest
+
+steps:
+- task: Python@3
+  displayName: 'Select YAML file'
+  inputs:
+    command: 'python'
+    args: 'select_yaml.py --file $(System.DefaultWorkingDirectory)/path/to/your/file.yaml'

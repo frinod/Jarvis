@@ -1,0 +1,61 @@
+# Azure Pipelines YAML skeleton
+
+trigger:
+- main
+
+pool:
+  vmImage: 'ubuntu-latest'
+
+variables:
+  buildConfiguration: 'Release'
+
+stages:
+- build
+- deploy
+
+build:
+  stage: build
+  displayName: 'Build'
+  jobs:
+  - job: build
+    displayName: 'Build'
+    steps:
+    - task: DotNetCoreCLI@2
+      displayName: 'Restore NuGet packages'
+      inputs:
+        command: 'restore'
+    - task: DotNetCoreCLI@2
+      displayName: 'Build'
+      inputs:
+        command: 'build'
+    - task: DotNetCoreCLI@2
+      displayName: 'Publish'
+      inputs:
+        command: 'publish'
+
+deploy:
+  stage: deploy
+  displayName: 'Deploy'
+  dependsOn: build
+  jobs:
+  - deployment: deploy
+    displayName: 'Deploy'
+    environment: 'production'
+    pool:
+      vmImage: 'ubuntu-latest'
+    strategy:
+      runOnce:
+        deploy:
+          steps:
+          - task: AzureAppServiceSettings@1
+            displayName: 'Azure App Service Settings'
+            inputs:
+              ResourceGroupName: 'your-resource-group'
+              AppServiceName: 'your-app-service'
+          - task: AzureRmWebAppDeployment@4
+            displayName: 'Azure App Service deployment'
+            inputs:
+              ConnectionType: 'AzureRM'
+              ResourceGroupName: 'your-resource-group'
+              AppServiceName: 'your-app-service'
+              Package: '$(System.DefaultWorkingDirectory)/**/*.zip'

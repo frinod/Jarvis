@@ -1,0 +1,901 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>FRINO OS</title>
+    <link href="https://fonts.googleapis.com/css2?family=Orbitron:wght@400;500;700;900&family=Rajdhani:wght@300;400;500;600;700&family=Share+Tech+Mono&display=swap" rel="stylesheet">
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        :root {
+            --bg: #050D1A;
+            --bg-secondary: #0A1628;
+            --cyan: #00D9FF;
+            --cyan-dim: rgba(0, 217, 255, 0.3);
+            --cyan-glow: rgba(0, 217, 255, 0.15);
+            --electric-blue: #0066FF;
+            --blue-glow: rgba(0, 102, 255, 0.2);
+            --panel-bg: rgba(10, 22, 40, 0.6);
+            --panel-border: rgba(0, 217, 255, 0.2);
+            --text: #E0F7FF;
+            --text-dim: rgba(224, 247, 255, 0.6);
+            --success: #00FF88;
+            --warning: #FFB800;
+            --danger: #FF3366;
+        }
+        body {
+            background: var(--bg);
+            color: var(--text);
+            font-family: 'Rajdhani', sans-serif;
+            height: 100vh;
+            overflow: hidden;
+            position: relative;
+        }
+
+        /* Background Grid */
+        body::before {
+            content: '';
+            position: fixed;
+            inset: 0;
+            background: 
+                linear-gradient(rgba(0, 217, 255, 0.03) 1px, transparent 1px),
+                linear-gradient(90deg, rgba(0, 217, 255, 0.03) 1px, transparent 1px);
+            background-size: 50px 50px;
+            pointer-events: none;
+        }
+
+        /* Scanning Line */
+        body::after {
+            content: '';
+            position: fixed;
+            top: 0; left: 0; right: 0;
+            height: 2px;
+            background: linear-gradient(90deg, transparent, var(--cyan), transparent);
+            animation: scanline 4s linear infinite;
+            opacity: 0.6;
+            pointer-events: none;
+            z-index: 9999;
+        }
+
+        @keyframes scanline {
+            0% { transform: translateY(-2px); }
+            100% { transform: translateY(100vh); }
+        }
+
+        /* Status Bar */
+        .hud-header {
+            height: 56px;
+            background: linear-gradient(180deg, rgba(10, 22, 40, 0.9), rgba(5, 13, 26, 0.8));
+            border-bottom: 1px solid var(--panel-border);
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            padding: 0 32px;
+            backdrop-filter: blur(20px);
+            position: relative;
+        }
+        .hud-header::after {
+            content: '';
+            position: absolute;
+            bottom: 0; left: 10%; right: 10%;
+            height: 1px;
+            background: linear-gradient(90deg, transparent, var(--cyan), transparent);
+        }
+        .hud-logo {
+            display: flex;
+            align-items: center;
+            gap: 12px;
+        }
+        .hud-logo .reactor-mini {
+            width: 28px; height: 28px;
+            border: 2px solid var(--cyan);
+            border-radius: 50%;
+            position: relative;
+            animation: pulse-border 2s infinite;
+        }
+        .hud-logo .reactor-mini::before {
+            content: '';
+            position: absolute;
+            inset: 4px;
+            background: radial-gradient(circle, var(--cyan), transparent);
+            border-radius: 50%;
+            opacity: 0.8;
+        }
+        .hud-logo h1 {
+            font-family: 'Orbitron', sans-serif;
+            font-size: 16px;
+            font-weight: 700;
+            letter-spacing: 4px;
+            background: linear-gradient(135deg, var(--cyan), var(--electric-blue));
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+        }
+        .hud-nav {
+            display: flex;
+            gap: 24px;
+            font-family: 'Share Tech Mono', monospace;
+            font-size: 11px;
+            color: var(--text-dim);
+        }
+        .hud-nav .nav-item {
+            display: flex;
+            align-items: center;
+            gap: 6px;
+        }
+        .hud-nav .status-dot {
+            width: 6px; height: 6px;
+            border-radius: 50%;
+            background: var(--success);
+            box-shadow: 0 0 8px var(--success);
+            animation: pulse-dot 2s infinite;
+        }
+        .hud-nav .status-dot.warning { background: var(--warning); box-shadow: 0 0 8px var(--warning); }
+
+        /* Main Layout */
+        .hud-main {
+            display: flex;
+            height: calc(100vh - 56px);
+            padding: 20px;
+            gap: 20px;
+        }
+
+        /* Glass Panel */
+        .glass-panel {
+            background: var(--panel-bg);
+            border: 1px solid var(--panel-border);
+            border-radius: 16px;
+            backdrop-filter: blur(20px);
+            position: relative;
+            overflow: hidden;
+            box-shadow: 
+                0 0 30px rgba(0, 217, 255, 0.05),
+                inset 0 1px 0 rgba(0, 217, 255, 0.1);
+        }
+        .glass-panel::before {
+            content: '';
+            position: absolute;
+            top: 0; left: 0; right: 0;
+            height: 1px;
+            background: linear-gradient(90deg, transparent, rgba(0, 217, 255, 0.5), transparent);
+        }
+        .glass-panel .panel-title {
+            font-family: 'Orbitron', sans-serif;
+            font-size: 10px;
+            letter-spacing: 3px;
+            color: var(--cyan);
+            text-transform: uppercase;
+            padding: 16px 20px 12px;
+            border-bottom: 1px solid rgba(0, 217, 255, 0.1);
+        }
+
+        /* Left Column - Arc Reactor */
+        .left-col {
+            width: 340px;
+            display: flex;
+            flex-direction: column;
+            gap: 16px;
+        }
+
+        /* Arc Reactor Core */
+        .reactor-container {
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            padding: 40px 20px 30px;
+        }
+        .arc-reactor {
+            position: relative;
+            width: 200px; height: 200px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+        }
+        .reactor-ring {
+            position: absolute;
+            border-radius: 50%;
+            border: 1px solid;
+        }
+        .reactor-ring-1 {
+            inset: 0;
+            border-color: rgba(0, 217, 255, 0.3);
+            animation: spin-slow 20s linear infinite;
+        }
+        .reactor-ring-1::before {
+            content: '';
+            position: absolute;
+            top: -2px; left: 50%;
+            width: 4px; height: 4px;
+            background: var(--cyan);
+            border-radius: 50%;
+            box-shadow: 0 0 10px var(--cyan);
+        }
+        .reactor-ring-2 {
+            inset: 15px;
+            border-color: rgba(0, 102, 255, 0.4);
+            animation: spin-slow 15s linear infinite reverse;
+            border-style: dashed;
+        }
+        .reactor-ring-3 {
+            inset: 30px;
+            border-color: rgba(0, 217, 255, 0.5);
+            animation: spin-slow 10s linear infinite;
+        }
+        .reactor-ring-3::after {
+            content: '';
+            position: absolute;
+            bottom: -2px; left: 50%;
+            width: 6px; height: 6px;
+            background: var(--electric-blue);
+            border-radius: 50%;
+            box-shadow: 0 0 12px var(--electric-blue);
+        }
+        .reactor-ring-4 {
+            inset: 45px;
+            border: 2px solid rgba(0, 217, 255, 0.6);
+            animation: pulse-border 3s infinite;
+        }
+        .reactor-core {
+            width: 70px; height: 70px;
+            border-radius: 50%;
+            background: radial-gradient(circle at 30% 30%, #80EEFF, var(--cyan), var(--electric-blue), #001133);
+            box-shadow: 
+                0 0 40px rgba(0, 217, 255, 0.6),
+                0 0 80px rgba(0, 217, 255, 0.3),
+                0 0 120px rgba(0, 102, 255, 0.2),
+                inset 0 0 20px rgba(255, 255, 255, 0.3);
+            animation: core-pulse 3s ease-in-out infinite;
+        }
+        .reactor-core.thinking {
+            background: radial-gradient(circle at 30% 30%, #B380FF, #7C3AED, #4C1D95, #1a0533);
+            box-shadow: 
+                0 0 40px rgba(124, 58, 237, 0.6),
+                0 0 80px rgba(124, 58, 237, 0.3),
+                0 0 120px rgba(124, 58, 237, 0.2);
+        }
+        /* Triangular segments around core */
+        .reactor-segments {
+            position: absolute;
+            inset: 42px;
+            animation: spin-slow 25s linear infinite;
+        }
+        .reactor-segments::before,
+        .reactor-segments::after {
+            content: '';
+            position: absolute;
+            width: 100%; height: 100%;
+            border-radius: 50%;
+            border: 1px solid transparent;
+            border-top-color: var(--cyan);
+            opacity: 0.5;
+        }
+        .reactor-segments::after {
+            transform: rotate(120deg);
+            border-top-color: var(--electric-blue);
+        }
+
+        .reactor-label {
+            margin-top: 20px;
+            font-family: 'Orbitron', sans-serif;
+            font-size: 11px;
+            letter-spacing: 2px;
+            color: var(--text-dim);
+            text-transform: uppercase;
+        }
+        .reactor-status {
+            font-family: 'Share Tech Mono', monospace;
+            font-size: 13px;
+            color: var(--cyan);
+            margin-top: 4px;
+        }
+
+        /* System Metrics */
+        .metrics-grid {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 10px;
+            padding: 16px;
+        }
+        .metric-card {
+            background: rgba(0, 217, 255, 0.03);
+            border: 1px solid rgba(0, 217, 255, 0.1);
+            border-radius: 10px;
+            padding: 12px;
+            text-align: center;
+            position: relative;
+            transition: all 0.3s;
+        }
+        .metric-card:hover {
+            border-color: var(--cyan);
+            box-shadow: 0 0 20px rgba(0, 217, 255, 0.1);
+        }
+        .metric-value {
+            font-family: 'Orbitron', sans-serif;
+            font-size: 20px;
+            font-weight: 700;
+            color: var(--cyan);
+        }
+        .metric-label {
+            font-size: 10px;
+            color: var(--text-dim);
+            text-transform: uppercase;
+            letter-spacing: 1px;
+            margin-top: 4px;
+        }
+        .metric-indicator {
+            position: absolute;
+            top: 8px; right: 8px;
+            width: 6px; height: 6px;
+            border-radius: 50%;
+            background: var(--success);
+            box-shadow: 0 0 6px var(--success);
+        }
+
+        /* Agent List */
+        .agent-list {
+            padding: 12px 16px;
+            display: flex;
+            flex-wrap: wrap;
+            gap: 6px;
+        }
+        .agent-chip {
+            font-family: 'Share Tech Mono', monospace;
+            font-size: 10px;
+            padding: 4px 10px;
+            border: 1px solid rgba(0, 217, 255, 0.2);
+            border-radius: 20px;
+            color: var(--cyan);
+            background: rgba(0, 217, 255, 0.05);
+            transition: all 0.3s;
+        }
+        .agent-chip:hover {
+            background: rgba(0, 217, 255, 0.15);
+            box-shadow: 0 0 12px rgba(0, 217, 255, 0.2);
+        }
+
+        /* Chat Panel */
+        .chat-col {
+            flex: 1;
+            display: flex;
+            flex-direction: column;
+        }
+        .chat-messages {
+            flex: 1;
+            overflow-y: auto;
+            padding: 20px;
+            display: flex;
+            flex-direction: column;
+            gap: 14px;
+        }
+        .message {
+            max-width: 75%;
+            padding: 14px 18px;
+            border-radius: 12px;
+            font-size: 14px;
+            line-height: 1.6;
+            font-weight: 400;
+            animation: msg-in 0.4s ease;
+            position: relative;
+        }
+        .message.user {
+            align-self: flex-end;
+            background: linear-gradient(135deg, rgba(0, 102, 255, 0.2), rgba(0, 217, 255, 0.1));
+            border: 1px solid rgba(0, 217, 255, 0.3);
+            border-bottom-right-radius: 4px;
+            cursor: pointer;
+            transition: all 0.2s;
+        }
+        .message.user:hover {
+            border-color: var(--cyan);
+            box-shadow: 0 0 12px rgba(0, 217, 255, 0.2);
+        }
+        .message.user:hover::after {
+            content: '\270E';
+            position: absolute;
+            top: 6px; right: 8px;
+            font-size: 12px;
+            color: var(--cyan);
+            opacity: 0.7;
+        }
+        .message.assistant {
+            align-self: flex-start;
+            background: rgba(10, 22, 40, 0.8);
+            border: 1px solid rgba(0, 217, 255, 0.15);
+            border-bottom-left-radius: 4px;
+        }
+        .message .msg-time {
+            font-family: 'Share Tech Mono', monospace;
+            font-size: 9px;
+            color: var(--text-dim);
+            margin-top: 6px;
+        }
+        .message.assistant::before {
+            content: 'FRINO';
+            position: absolute;
+            top: -18px; left: 0;
+            font-family: 'Orbitron', sans-serif;
+            font-size: 8px;
+            letter-spacing: 2px;
+            color: var(--cyan);
+            opacity: 0.7;
+        }
+        .message.assistant code {
+            background: rgba(0, 217, 255, 0.1);
+            border: 1px solid rgba(0, 217, 255, 0.2);
+            border-radius: 4px;
+            padding: 2px 6px;
+            font-family: 'Share Tech Mono', monospace;
+            font-size: 13px;
+            color: var(--cyan);
+        }
+        .message.assistant pre {
+            background: rgba(5, 13, 26, 0.9);
+            border: 1px solid rgba(0, 217, 255, 0.2);
+            border-radius: 8px;
+            padding: 12px 16px;
+            margin: 8px 0;
+            overflow-x: auto;
+            font-family: 'Share Tech Mono', monospace;
+            font-size: 13px;
+            color: var(--success);
+        }
+        .message.assistant pre code {
+            background: none;
+            border: none;
+            padding: 0;
+            color: var(--success);
+        }
+        .message.assistant ul, .message.assistant ol {
+            padding-left: 20px;
+            margin: 6px 0;
+        }
+        .message.assistant li { margin: 4px 0; }
+        .message.assistant strong { color: var(--cyan); }
+        .message.assistant h1, .message.assistant h2, .message.assistant h3 {
+            font-family: 'Orbitron', sans-serif;
+            font-size: 14px;
+            color: var(--cyan);
+            margin: 10px 0 6px;
+        }
+        /* Edit mode */
+        .edit-container {
+            display: flex;
+            gap: 8px;
+            align-items: center;
+            max-width: 75%;
+            align-self: flex-end;
+            animation: msg-in 0.3s ease;
+        }
+        .edit-container input {
+            flex: 1;
+            background: rgba(0, 102, 255, 0.1);
+            border: 1px solid var(--cyan);
+            border-radius: 10px;
+            padding: 10px 14px;
+            color: var(--text);
+            font-family: 'Rajdhani', sans-serif;
+            font-size: 14px;
+            outline: none;
+        }
+        .edit-container button {
+            background: rgba(0, 217, 255, 0.15);
+            border: 1px solid var(--cyan);
+            border-radius: 8px;
+            color: var(--cyan);
+            padding: 8px 12px;
+            cursor: pointer;
+            font-family: 'Rajdhani', sans-serif;
+            font-size: 12px;
+            font-weight: 600;
+        }
+        .edit-container button:hover { background: rgba(0, 217, 255, 0.3); }
+        .edit-container button.cancel-btn { border-color: var(--danger); color: var(--danger); }
+        .message.user::before {
+            content: 'YOU';
+            position: absolute;
+            top: -18px; right: 0;
+            font-family: 'Orbitron', sans-serif;
+            font-size: 8px;
+            letter-spacing: 2px;
+            color: var(--electric-blue);
+            opacity: 0.7;
+        }
+
+        /* Typing Indicator */
+        .typing {
+            display: flex;
+            gap: 5px;
+            padding: 14px 18px;
+            align-self: flex-start;
+        }
+        .typing-dot {
+            width: 8px; height: 8px;
+            background: var(--cyan);
+            border-radius: 50%;
+            animation: typing-bounce 1s infinite;
+            box-shadow: 0 0 8px var(--cyan);
+        }
+        .typing-dot:nth-child(2) { animation-delay: 0.2s; }
+        .typing-dot:nth-child(3) { animation-delay: 0.4s; }
+
+        /* Input Area */
+        .chat-input {
+            padding: 16px 20px;
+            border-top: 1px solid rgba(0, 217, 255, 0.1);
+        }
+        .input-container {
+            display: flex;
+            align-items: center;
+            gap: 12px;
+            background: rgba(5, 13, 26, 0.8);
+            border: 1px solid rgba(0, 217, 255, 0.2);
+            border-radius: 12px;
+            padding: 10px 18px;
+            transition: all 0.3s;
+        }
+        .input-container:focus-within {
+            border-color: var(--cyan);
+            box-shadow: 0 0 20px rgba(0, 217, 255, 0.1), inset 0 0 20px rgba(0, 217, 255, 0.02);
+        }
+        .input-container input {
+            flex: 1;
+            background: none;
+            border: none;
+            outline: none;
+            color: var(--text);
+            font-family: 'Rajdhani', sans-serif;
+            font-size: 15px;
+            font-weight: 500;
+        }
+        .input-container input::placeholder {
+            color: var(--text-dim);
+            font-style: italic;
+        }
+        .send-btn {
+            width: 38px; height: 38px;
+            border: 1px solid var(--cyan);
+            border-radius: 50%;
+            background: rgba(0, 217, 255, 0.1);
+            color: var(--cyan);
+            cursor: pointer;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            transition: all 0.3s;
+        }
+        .send-btn:hover {
+            background: rgba(0, 217, 255, 0.2);
+            box-shadow: 0 0 20px rgba(0, 217, 255, 0.3);
+            transform: scale(1.05);
+        }
+        .send-btn svg { width: 16px; height: 16px; }
+
+        /* Scrollbar */
+        ::-webkit-scrollbar { width: 4px; }
+        ::-webkit-scrollbar-track { background: transparent; }
+        ::-webkit-scrollbar-thumb { background: var(--cyan-dim); border-radius: 2px; }
+
+        /* Animations */
+        @keyframes spin-slow { from { transform: rotate(0deg); } to { transform: rotate(360deg); } }
+        @keyframes core-pulse {
+            0%, 100% { transform: scale(1); filter: brightness(1); }
+            50% { transform: scale(1.06); filter: brightness(1.2); }
+        }
+        @keyframes pulse-border {
+            0%, 100% { opacity: 0.5; transform: scale(1); }
+            50% { opacity: 1; transform: scale(1.02); }
+        }
+        @keyframes pulse-dot {
+            0%, 100% { opacity: 1; } 50% { opacity: 0.4; }
+        }
+        @keyframes msg-in {
+            from { opacity: 0; transform: translateY(12px); }
+            to { opacity: 1; transform: translateY(0); }
+        }
+        @keyframes typing-bounce {
+            0%, 100% { transform: translateY(0); opacity: 0.5; }
+            50% { transform: translateY(-8px); opacity: 1; }
+        }
+
+        /* Corner Decorations */
+        .corner-decor {
+            position: fixed;
+            width: 40px; height: 40px;
+            pointer-events: none;
+            opacity: 0.4;
+        }
+        .corner-decor.tl { top: 60px; left: 4px; border-top: 2px solid var(--cyan); border-left: 2px solid var(--cyan); }
+        .corner-decor.tr { top: 60px; right: 4px; border-top: 2px solid var(--cyan); border-right: 2px solid var(--cyan); }
+        .corner-decor.bl { bottom: 4px; left: 4px; border-bottom: 2px solid var(--cyan); border-left: 2px solid var(--cyan); }
+        .corner-decor.br { bottom: 4px; right: 4px; border-bottom: 2px solid var(--cyan); border-right: 2px solid var(--cyan); }
+    </style>
+</head>
+<body>
+    <!-- Corner Decorations -->
+    <div class="corner-decor tl"></div>
+    <div class="corner-decor tr"></div>
+    <div class="corner-decor bl"></div>
+    <div class="corner-decor br"></div>
+
+    <!-- Header -->
+    <header class="hud-header">
+        <div class="hud-logo">
+            <div class="reactor-mini"></div>
+            <h1>FRINO OS</h1>
+        </div>
+        <div class="hud-nav">
+            <div class="nav-item"><div class="status-dot"></div><span>AI CORE</span></div>
+            <div class="nav-item"><div class="status-dot"></div><span>MEMORY</span></div>
+            <div class="nav-item"><div class="status-dot"></div><span>AGENTS</span></div>
+            <div class="nav-item"><div class="status-dot warning" id="llm-dot"></div><span id="llm-status">LLM</span></div>
+        </div>
+    </header>
+
+    <!-- Main -->
+    <div class="hud-main">
+        <!-- Left Panel -->
+        <div class="left-col">
+            <!-- Arc Reactor -->
+            <div class="glass-panel reactor-container">
+                <div class="arc-reactor">
+                    <div class="reactor-ring reactor-ring-1"></div>
+                    <div class="reactor-ring reactor-ring-2"></div>
+                    <div class="reactor-ring reactor-ring-3"></div>
+                    <div class="reactor-ring reactor-ring-4"></div>
+                    <div class="reactor-segments"></div>
+                    <div class="reactor-core" id="reactor-core"></div>
+                </div>
+                <div class="reactor-label">SYSTEM STATUS</div>
+                <div class="reactor-status" id="reactor-status">● ONLINE — IDLE</div>
+            </div>
+
+            <!-- Metrics -->
+            <div class="glass-panel">
+                <div class="panel-title">DIAGNOSTICS</div>
+                <div class="metrics-grid">
+                    <div class="metric-card">
+                        <div class="metric-indicator"></div>
+                        <div class="metric-value" id="m-interactions">0</div>
+                        <div class="metric-label">Interactions</div>
+                    </div>
+                    <div class="metric-card">
+                        <div class="metric-indicator"></div>
+                        <div class="metric-value" id="m-confidence">80%</div>
+                        <div class="metric-label">Confidence</div>
+                    </div>
+                    <div class="metric-card">
+                        <div class="metric-indicator"></div>
+                        <div class="metric-value" id="m-memory">0</div>
+                        <div class="metric-label">Memory</div>
+                    </div>
+                    <div class="metric-card">
+                        <div class="metric-indicator"></div>
+                        <div class="metric-value" id="m-tools">3</div>
+                        <div class="metric-label">Tools</div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Agents -->
+            <div class="glass-panel" style="flex:1;">
+                <div class="panel-title">ACTIVE AGENTS</div>
+                <div class="agent-list" id="agents-container"></div>
+            </div>
+        </div>
+
+        <!-- Chat -->
+        <div class="chat-col glass-panel">
+            <div class="panel-title">COMMUNICATION CHANNEL</div>
+            <div class="chat-messages" id="messages">
+                <div class="message assistant">
+                    Good day. I am FRINO, your personal AI operating system. All subsystems are online. How may I assist you?
+                    <div class="msg-time">System Initialization</div>
+                </div>
+            </div>
+            <div class="chat-input">
+                <div class="input-container">
+                    <input type="text" id="input" placeholder="Enter command or speak freely..." autocomplete="off">
+                    <button class="send-btn" onclick="sendMessage()">
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round">
+                            <path d="M22 2L11 13M22 2L15 22L11 13M22 2L2 9L11 13"/>
+                        </svg>
+                    </button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        const API = '/api';
+        const messagesEl = document.getElementById('messages');
+        const inputEl = document.getElementById('input');
+        const reactorCore = document.getElementById('reactor-core');
+        const reactorStatus = document.getElementById('reactor-status');
+
+        async function sendMessage() {
+            const text = inputEl.value.trim();
+            if (!text) return;
+
+            addMessage(text, 'user');
+            inputEl.value = '';
+            setStatus('thinking');
+            showTyping();
+
+            try {
+                const res = await fetch(`${API}/chat`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ message: text, user_id: 'default', stream: false })
+                });
+                const data = await res.json();
+                hideTyping();
+                addMessage(data.response, 'assistant');
+                if (data.status) updateMetrics(data.status);
+            } catch (e) {
+                hideTyping();
+                addMessage('⚠ Communication link disrupted. Verify backend status.', 'assistant');
+            }
+            setStatus('idle');
+        }
+
+        function addMessage(content, role) {
+            const div = document.createElement('div');
+            div.className = `message ${role}`;
+            const time = new Date().toLocaleTimeString('en-US', { hour12: false });
+            if (role === 'assistant') {
+                div.innerHTML = `${renderMarkdown(content)}<div class="msg-time">${time}</div>`;
+            } else {
+                div.setAttribute('data-raw', content);
+                div.innerHTML = `${escapeHtml(content)}<div class="msg-time">${time}</div>`;
+                div.onclick = () => editMessage(div);
+            }
+            messagesEl.appendChild(div);
+            messagesEl.scrollTop = messagesEl.scrollHeight;
+        }
+
+        function editMessage(msgEl) {
+            const raw = msgEl.getAttribute('data-raw');
+            if (!raw) return;
+            // Remove this message and all messages after it
+            const allMsgs = Array.from(messagesEl.children);
+            const idx = allMsgs.indexOf(msgEl);
+            for (let i = allMsgs.length - 1; i >= idx; i--) {
+                allMsgs[i].remove();
+            }
+            // Show edit input
+            const editDiv = document.createElement('div');
+            editDiv.className = 'edit-container';
+            editDiv.innerHTML = `<input type="text" value="${raw.replace(/"/g, '&quot;')}" autofocus>
+                <button onclick="submitEdit(this)">Send</button>
+                <button class="cancel-btn" onclick="cancelEdit(this, '${raw.replace(/'/g, "\\'")}')">X</button>`;
+            messagesEl.appendChild(editDiv);
+            const editInput = editDiv.querySelector('input');
+            editInput.focus();
+            editInput.addEventListener('keydown', (e) => {
+                if (e.key === 'Enter') submitEdit(editDiv.querySelector('button'));
+            });
+        }
+
+        function submitEdit(btn) {
+            const container = btn.parentElement;
+            const text = container.querySelector('input').value.trim();
+            container.remove();
+            if (text) {
+                addMessage(text, 'user');
+                inputEl.value = '';
+                setStatus('thinking');
+                showTyping();
+                fetch(`${API}/chat`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ message: text, user_id: 'default', stream: false })
+                }).then(r => r.json()).then(data => {
+                    hideTyping();
+                    addMessage(data.response, 'assistant');
+                    if (data.status) updateMetrics(data.status);
+                    setStatus('idle');
+                }).catch(() => {
+                    hideTyping();
+                    addMessage('Communication error.', 'assistant');
+                    setStatus('idle');
+                });
+            }
+        }
+
+        function cancelEdit(btn, original) {
+            btn.parentElement.remove();
+            addMessage(original, 'user');
+        }
+
+        function renderMarkdown(text) {
+            // Code blocks
+            text = text.replace(/```(\w*)\n([\s\S]*?)```/g, '<pre><code>$2</code></pre>');
+            // Inline code
+            text = text.replace(/`([^`]+)`/g, '<code>$1</code>');
+            // Bold
+            text = text.replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>');
+            // Italic
+            text = text.replace(/\*(.+?)\*/g, '<em>$1</em>');
+            // Headers
+            text = text.replace(/^### (.+)$/gm, '<h3>$1</h3>');
+            text = text.replace(/^## (.+)$/gm, '<h2>$1</h2>');
+            text = text.replace(/^# (.+)$/gm, '<h1>$1</h1>');
+            // Unordered lists
+            text = text.replace(/^[\*\-] (.+)$/gm, '<li>$1</li>');
+            text = text.replace(/(<li>.*<\/li>)/s, '<ul>$1</ul>');
+            // Numbered lists
+            text = text.replace(/^\d+\. (.+)$/gm, '<li>$1</li>');
+            // Line breaks
+            text = text.replace(/\n/g, '<br>');
+            // Clean up
+            text = text.replace(/<br><pre>/g, '<pre>').replace(/<\/pre><br>/g, '</pre>');
+            text = text.replace(/<br><h/g, '<h').replace(/<\/h(\d)><br>/g, '</h$1>');
+            text = text.replace(/<br><ul>/g, '<ul>').replace(/<\/ul><br>/g, '</ul>');
+            return text;
+        }
+
+        function escapeHtml(text) {
+            const d = document.createElement('div');
+            d.textContent = text;
+            return d.innerHTML.replace(/\n/g, '<br>');
+        }
+
+        function showTyping() {
+            const div = document.createElement('div');
+            div.className = 'typing';
+            div.id = 'typing';
+            div.innerHTML = '<div class="typing-dot"></div><div class="typing-dot"></div><div class="typing-dot"></div>';
+            messagesEl.appendChild(div);
+            messagesEl.scrollTop = messagesEl.scrollHeight;
+        }
+
+        function hideTyping() {
+            const el = document.getElementById('typing');
+            if (el) el.remove();
+        }
+
+        function setStatus(status) {
+            reactorStatus.textContent = `● ONLINE — ${status.toUpperCase()}`;
+            if (status === 'thinking') {
+                reactorCore.classList.add('thinking');
+            } else {
+                reactorCore.classList.remove('thinking');
+            }
+        }
+
+        function updateMetrics(data) {
+            if (!data) return;
+            document.getElementById('m-interactions').textContent = data.state?.interaction_count || 0;
+            document.getElementById('m-confidence').textContent = Math.round((data.state?.confidence || 0.8) * 100) + '%';
+            document.getElementById('m-memory').textContent = data.memory?.total || 0;
+            document.getElementById('m-tools').textContent = data.tools || 0;
+
+            const container = document.getElementById('agents-container');
+            if (data.agents) {
+                container.innerHTML = data.agents.map(a => `<span class="agent-chip">${a.toUpperCase()}</span>`).join('');
+            }
+        }
+
+        inputEl.addEventListener('keydown', (e) => {
+            if (e.key === 'Enter') sendMessage();
+        });
+
+        // Fetch initial status
+        fetch(`${API}/status`)
+            .then(r => r.json())
+            .then(data => {
+                updateMetrics(data);
+                const llmDot = document.getElementById('llm-dot');
+                const llmLabel = document.getElementById('llm-status');
+                if (data.llm_provider && data.llm_provider !== 'none (fallback mode)') {
+                    llmDot.classList.remove('warning');
+                    llmDot.style.background = 'var(--success)';
+                    llmDot.style.boxShadow = '0 0 8px var(--success)';
+                    llmLabel.textContent = data.llm_provider.toUpperCase();
+                } else {
+                    llmLabel.textContent = 'NO LLM';
+                }
+            })
+            .catch(() => {});
+    </script>
+</body>
+</html>

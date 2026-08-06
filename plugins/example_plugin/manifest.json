@@ -1,0 +1,8 @@
+{
+  "name": "example_plugin",
+  "version": "1.0.0",
+  "description": "Example plugin demonstrating the JARVIS plugin SDK",
+  "author": "JARVIS Team",
+  "entry_point": "main.py",
+  "capabilities": ["greet", "calculate"]
+}
