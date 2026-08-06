@@ -740,7 +740,10 @@ class JarvisOrchestrator:
             ast.Pow: operator.pow, ast.USub: operator.neg,
         }
         def _eval(node):
-            if isinstance(node, ast.Constant) and isinstance(node.value, (int, float)):
+            # Python 3.8+: ast.Constant  |  Python 3.7: ast.Num
+            if isinstance(node, ast.Num):
+                return node.n
+            if hasattr(ast, 'Constant') and isinstance(node, ast.Constant) and isinstance(node.value, (int, float)):
                 return node.value
             if isinstance(node, ast.BinOp) and type(node.op) in _OPS:
                 return _OPS[type(node.op)](_eval(node.left), _eval(node.right))

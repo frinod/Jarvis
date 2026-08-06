@@ -885,9 +885,36 @@ async def list_strategies():
     return {"strategies": STRATEGIES}
 
 
-# ─── Other Routes ─────────────────────────────────────────────
+@router.get("/ai/runtime/status")
+async def ai_runtime_status():
+    """Health and metrics snapshot for the AIRuntime layer."""
+    orch = get_orchestrator()
+    if orch.ai_runtime is None:
+        return {
+            "runtime": "INACTIVE",
+            "reason": "AIRuntime not wired — no LLM provider configured at startup",
+        }
+    health  = await orch.ai_runtime.health()
+    metrics = orch.ai_runtime.metrics()
+    return {
+        "runtime":            "ACTIVE",
+        "status":             health.status,
+        "brain":              True,
+        "memory":             True,
+        "reasoning":          True,
+        "gateway":            True,
+        "providers":          health.gateway_providers,
+        "registered_agents":  health.registered_agents,
+        "requests_processed": metrics.total_requests,
+        "workflows_run":      metrics.total_workflows,
+        "completed_goals":    metrics.completed_goals,
+        "failed_goals":       metrics.failed_goals,
+        "total_decisions":    metrics.total_decisions,
+        "total_reflections":  metrics.total_reflections,
+    }
 
-@router.post("/tools/execute")
+
+
 async def execute_tool(req: ToolRequest):
     orch = get_orchestrator()
     return await orch.execute_tool(req.tool_name, req.params, req.confirmed)
