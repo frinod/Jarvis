@@ -94,17 +94,19 @@ async def startup():
     except Exception as e:
         print(f"[JARVIS] Alert engine failed to start: {e}")
 
+    # Build LLMGateway (AIRuntime's LLM layer) alongside LLMRouter
+    from app.ai.runtime.llm_gateway import LLMGateway
+    gateway = LLMGateway()
+
     connected = False
 
     # Priority 1: Gemini (free)
     gemini_key = (settings.gemini_api_key or '').strip()
     if gemini_key.startswith('AIza'):
         from app.core.llm import GeminiProvider
-        orchestrator.llm.register(
-            "gemini",
-            GeminiProvider(gemini_key, settings.gemini_model),
-            default=True
-        )
+        provider = GeminiProvider(gemini_key, settings.gemini_model)
+        orchestrator.llm.register("gemini", provider, default=True)
+        gateway.register("gemini", provider, priority=10, default=True)
         print(f"[JARVIS] + Google Gemini connected (model: {settings.gemini_model})")
         connected = True
     elif gemini_key:
@@ -114,11 +116,9 @@ async def startup():
     groq_key = (settings.groq_api_key or '').strip()
     if groq_key.startswith('gsk_'):
         from app.core.llm import OpenAICompatibleProvider
-        orchestrator.llm.register(
-            "groq",
-            OpenAICompatibleProvider(groq_key, settings.groq_model, "https://api.groq.com/openai/v1"),
-            default=not connected
-        )
+        provider = OpenAICompatibleProvider(groq_key, settings.groq_model, "https://api.groq.com/openai/v1")
+        orchestrator.llm.register("groq", provider, default=not connected)
+        gateway.register("groq", provider, priority=20, default=not connected)
         print(f"[JARVIS] + Groq connected (model: {settings.groq_model})")
         connected = True
     elif groq_key:
@@ -128,11 +128,9 @@ async def startup():
     deepseek_key = (settings.deepseek_api_key or '').strip()
     if deepseek_key:
         from app.core.llm import OpenAICompatibleProvider
-        orchestrator.llm.register(
-            "deepseek",
-            OpenAICompatibleProvider(deepseek_key, settings.deepseek_model, "https://api.deepseek.com/v1"),
-            default=not connected
-        )
+        provider = OpenAICompatibleProvider(deepseek_key, settings.deepseek_model, "https://api.deepseek.com/v1")
+        orchestrator.llm.register("deepseek", provider, default=not connected)
+        gateway.register("deepseek", provider, priority=30, default=not connected)
         print(f"[FRINO] + DeepSeek connected (model: {settings.deepseek_model})")
         connected = True
 
@@ -140,11 +138,9 @@ async def startup():
     openai_key = (settings.openai_api_key or '').strip()
     if openai_key:
         from app.core.llm import OpenAICompatibleProvider
-        orchestrator.llm.register(
-            "openai",
-            OpenAICompatibleProvider(openai_key, settings.openai_model, "https://api.openai.com/v1"),
-            default=not connected
-        )
+        provider = OpenAICompatibleProvider(openai_key, settings.openai_model, "https://api.openai.com/v1")
+        orchestrator.llm.register("openai", provider, default=not connected)
+        gateway.register("openai", provider, priority=40, default=not connected)
         print(f"[FRINO] + OpenAI connected (model: {settings.openai_model})")
         connected = True
 
@@ -152,11 +148,9 @@ async def startup():
     openrouter_key = (settings.openrouter_api_key or '').strip()
     if openrouter_key:
         from app.core.llm import OpenAICompatibleProvider
-        orchestrator.llm.register(
-            "openrouter",
-            OpenAICompatibleProvider(openrouter_key, "meta-llama/llama-3.1-8b-instruct:free", "https://openrouter.ai/api/v1"),
-            default=not connected
-        )
+        provider = OpenAICompatibleProvider(openrouter_key, "meta-llama/llama-3.1-8b-instruct:free", "https://openrouter.ai/api/v1")
+        orchestrator.llm.register("openrouter", provider, default=not connected)
+        gateway.register("openrouter", provider, priority=50, default=not connected)
         print("[FRINO] + OpenRouter connected")
         connected = True
 
@@ -167,11 +161,9 @@ async def startup():
         try:
             r = httpx.get(settings.local_model_path, timeout=3.0)
             if r.status_code == 200:
-                orchestrator.llm.register(
-                    "ollama",
-                    OllamaProvider(settings.local_model_path, settings.ollama_model),
-                    default=True
-                )
+                provider = OllamaProvider(settings.local_model_path, settings.ollama_model)
+                orchestrator.llm.register("ollama", provider, default=True)
+                gateway.register("ollama", provider, priority=60, default=True)
                 print(f"[FRINO] + Ollama connected (model: {settings.ollama_model})")
                 connected = True
         except Exception:
@@ -185,6 +177,15 @@ async def startup():
         print("[FRINO]   - GROQ_API_KEY    (free: https://console.groq.com/keys)")
         print("[FRINO]   - DEEPSEEK_API_KEY (cheap: https://platform.deepseek.com)")
         print("[FRINO] ===================================================")
+
+    # Wire AIRuntime — attaches to orchestrator so all live requests flow through it
+    if connected:
+        try:
+            from app.ai import AIRuntime
+            orchestrator.ai_runtime = AIRuntime(gateway=gateway)
+            print("[JARVIS] + AIRuntime wired — all requests now route through Brain → LLMGateway")
+        except Exception as e:
+            print(f"[JARVIS] AIRuntime init failed (falling back to LLMRouter): {e}")
 
 
 @app.on_event("shutdown")

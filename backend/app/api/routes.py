@@ -3,7 +3,7 @@ from __future__ import annotations
 import asyncio
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect, Query
 from fastapi.responses import StreamingResponse
-from pydantic import BaseModel
+from pydantic import BaseModel, validator
 from typing import Optional, List
 
 router = APIRouter()
@@ -679,6 +679,25 @@ class TradeRequest(BaseModel):
     trade_mode: str = "delivery"
     source: str = "user"
     notes: str = ""
+
+    @validator('symbol')
+    def symbol_must_be_alphanumeric(cls, v):
+        import re
+        if not re.match(r'^[A-Za-z0-9&_\-\.]{1,20}$', v):
+            raise ValueError('symbol must be 1-20 alphanumeric characters')
+        return v.upper()
+
+    @validator('trade_type')
+    def trade_type_must_be_valid(cls, v):
+        if v.upper() not in ('BUY', 'SELL'):
+            raise ValueError('trade_type must be BUY or SELL')
+        return v.upper()
+
+    @validator('qty')
+    def qty_must_be_positive(cls, v):
+        if v < 1 or v > 10_000:
+            raise ValueError('qty must be between 1 and 10000')
+        return v
 
 
 class CreatePortfolioRequest(BaseModel):

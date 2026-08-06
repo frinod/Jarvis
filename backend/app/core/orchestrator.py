@@ -30,6 +30,7 @@ class JarvisOrchestrator:
         self.plugins = PluginManager()
         self.llm = LLMRouter()
         self._history: list = []  # [(role, content), ...] max 40 turns
+        self.ai_runtime = None   # set by main.py startup after LLMGateway is built
 
     # ─── Conversation History ─────────────────────────────────────────
 
@@ -400,7 +401,7 @@ class JarvisOrchestrator:
         self.personality.detect_emotion(user_input)
         self._add_history("user", user_input)
 
-        if not self.llm.default_provider:
+        if not self.llm.default_provider and self.ai_runtime is None:
             reply = await self._smart_fallback(user_input)
             self._add_history("assistant", reply)
             self.core.update_focus(FocusState.IDLE)
@@ -410,11 +411,14 @@ class JarvisOrchestrator:
         trade_context = self._load_trade_context()
         modifiers = self.personality.get_response_modifiers()
         system_prompt = self._build_system_prompt(modifiers, live_context, trade_context)
-        messages = self._build_messages(system_prompt, user_input)
 
         try:
-            response = await self.llm.generate(messages, max_tokens=1200)
-            reply = response.content
+            if self.ai_runtime is not None:
+                reply = await self._call_runtime(system_prompt, user_input)
+            else:
+                messages = self._build_messages(system_prompt, user_input)
+                response = await self.llm.generate(messages, max_tokens=1200)
+                reply = response.content
             self.core.set_confidence(0.95)
         except Exception as e:
             print(f"[JARVIS] LLM error: {e}")
@@ -427,6 +431,21 @@ class JarvisOrchestrator:
         self.reasoning.clear_chain()
         return reply
 
+    async def _call_runtime(self, system_prompt: str, user_input: str) -> str:
+        """Delegate a fully-prepared prompt to AIRuntime.process()."""
+        from app.ai.runtime.llm_gateway import LLMRequest
+        from app.core.llm import LLMMessage
+        messages = self._build_messages(system_prompt, user_input)
+        request = LLMRequest(
+            messages=messages,
+            max_tokens=1200,
+            metadata={"source": "orchestrator"},
+        )
+        # ExecutionEngine.stream/complete expects a gateway call; use gateway directly
+        # to keep the full retry + fallback chain from LLMGateway.
+        response = await self.ai_runtime.gateway.complete(request)
+        return response.content
+
     async def process_stream(self, user_input: str, user_id: str = "default", selected_stock: str = None) -> AsyncGenerator[str, None]:
         self.core.update_focus(FocusState.THINKING)
         self.core.increment_interaction()
@@ -435,7 +454,7 @@ class JarvisOrchestrator:
 
         full_response = ""
 
-        if not self.llm.default_provider:
+        if not self.llm.default_provider and self.ai_runtime is None:
             fallback = await self._smart_fallback(user_input)
             yield fallback
             full_response = fallback
@@ -446,12 +465,18 @@ class JarvisOrchestrator:
             system_prompt = self._build_system_prompt(modifiers, live_context, trade_context)
             messages = self._build_messages(system_prompt, user_input)
             try:
-                async for token in self.llm.stream(messages, max_tokens=1200):
-                    full_response += token
-                    yield token
+                if self.ai_runtime is not None:
+                    from app.ai.runtime.llm_gateway import LLMRequest
+                    request = LLMRequest(messages=messages, max_tokens=1200)
+                    async for token in self.ai_runtime.gateway.stream(request):
+                        full_response += token
+                        yield token
+                else:
+                    async for token in self.llm.stream(messages, max_tokens=1200):
+                        full_response += token
+                        yield token
             except Exception as e:
                 print(f"[JARVIS] LLM stream error: {e}")
-                # Only fallback if nothing was streamed yet
                 if not full_response:
                     fallback = await self._smart_fallback(user_input)
                     yield fallback
@@ -703,6 +728,34 @@ class JarvisOrchestrator:
             pass
         return ""
 
+    # ─── Safe Math Evaluator ──────────────────────────────────────────
+
+    def _safe_math(self, text: str):
+        """Evaluate a simple arithmetic expression using AST — no eval()."""
+        import ast
+        import operator
+        _OPS = {
+            ast.Add: operator.add, ast.Sub: operator.sub,
+            ast.Mult: operator.mul, ast.Div: operator.truediv,
+            ast.Pow: operator.pow, ast.USub: operator.neg,
+        }
+        def _eval(node):
+            if isinstance(node, ast.Constant) and isinstance(node.value, (int, float)):
+                return node.value
+            if isinstance(node, ast.BinOp) and type(node.op) in _OPS:
+                return _OPS[type(node.op)](_eval(node.left), _eval(node.right))
+            if isinstance(node, ast.UnaryOp) and type(node.op) in _OPS:
+                return _OPS[type(node.op)](_eval(node.operand))
+            raise ValueError("unsupported expression")
+        try:
+            expr = text.replace('what is', '').replace('calculate', '').replace('compute', '')
+            expr = expr.replace('plus', '+').replace('minus', '-').replace('times', '*').replace('divided by', '/').strip()
+            tree = ast.parse(expr, mode='eval')
+            result = _eval(tree.body)
+            return round(result, 10) if isinstance(result, float) else result
+        except Exception:
+            return None
+
     # ─── Smart Fallback (No LLM configured) ──────────────────────────
 
     async def _smart_fallback(self, user_input: str) -> str:
@@ -839,13 +892,9 @@ class JarvisOrchestrator:
 
         # Math
         if any(w in lower for w in ['calculate', 'what is', 'how much is', 'compute']) and any(c in lower for c in ['+', '-', '*', '/', 'plus', 'minus', 'times', 'divided']):
-            try:
-                expr = lower.replace('what is', '').replace('calculate', '').replace('compute', '')
-                expr = expr.replace('plus', '+').replace('minus', '-').replace('times', '*').replace('divided by', '/').strip()
-                result = eval(expr, {'__builtins__': {}})  # safe eval for math only
+            result = self._safe_math(lower)
+            if result is not None:
                 return f"The answer is {result}, Sir."
-            except Exception:
-                pass
 
         # Live data fetches
         if any(w in lower for w in ['weather', 'temperature', 'temp ', 'rain', 'humid', 'forecast']):
