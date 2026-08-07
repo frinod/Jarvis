@@ -9,10 +9,14 @@ Exports
   ShortTermMemory                  -- ring buffer
   ShortTermMemoryAdapter           -- PipelineMemoryProvider for short-term only
   LongTermMemory                   -- ABC
-  InMemoryLongTermMemory           -- Phase 6 implementation
+  InMemoryLongTermMemory           -- Phase 6 implementation (testing / fallback)
+  QdrantLongTermMemory             -- Phase 7A implementation (persistent)
   SearchResult                     -- search result with score
   EmbeddingService                 -- ABC
-  SimpleEmbeddingService           -- Phase 6 implementation
+  SimpleEmbeddingService           -- Phase 6 implementation (testing / fallback)
+  SentenceTransformerEmbeddingService -- Phase 7A implementation (semantic)
+  MemoryHealthMonitor              -- health state machine (ADR-002)
+  MemoryHealthState                -- Healthy/Degraded/Offline/Recovering
   MemoryPipelineProvider           -- full provider: STM + LTM + embeddings
 
 MemoryPipelineProvider
@@ -25,7 +29,9 @@ MemoryPipelineProvider
     1. Records user turn in ShortTermMemory.
     2. Retrieves recent turns from ShortTermMemory.
     3. Performs semantic search in LongTermMemory (if embeddings enabled).
-    4. Merges results into ctx.memory_context.
+       Uses search_by_vector() when QdrantLongTermMemory is present.
+    4. Merges results into ctx.memory_context (STM first, then LTM hits).
+    5. Respects MemoryHealthMonitor state: skips LTM when Offline.
 """
 from __future__ import annotations
 
@@ -34,6 +40,9 @@ from typing import List, Optional
 from app.ai.memory.short_term import MemoryEntry, MemoryRole, ShortTermMemory, ShortTermMemoryAdapter
 from app.ai.memory.long_term import InMemoryLongTermMemory, LongTermMemory, SearchResult
 from app.ai.memory.embeddings import EmbeddingService, SimpleEmbeddingService
+from app.ai.memory.memory_health import MemoryHealthMonitor, MemoryHealthState
+from app.ai.memory.qdrant_memory import QdrantLongTermMemory
+from app.ai.memory.sentence_transformer_embeddings import SentenceTransformerEmbeddingService
 from app.ai.runtime.context import ExecutionContext
 from app.ai.runtime.execution import PipelineMemoryProvider
 
@@ -75,7 +84,10 @@ class MemoryPipelineProvider(PipelineMemoryProvider):
         """
         1. Record user turn in ShortTermMemory.
         2. Load recent turns from ShortTermMemory.
-        3. Semantic search in LongTermMemory (if both LTM and embeddings present).
+        3. Semantic or keyword search in LongTermMemory.
+           - Skipped entirely when health state is Offline.
+           - Uses search_by_vector() for QdrantLongTermMemory + embeddings.
+           - Falls back to keyword search when no embeddings.
         4. Merge into ctx.memory_context (STM first, then LTM hits).
         """
         # 1. Record current user turn
@@ -91,21 +103,34 @@ class MemoryPipelineProvider(PipelineMemoryProvider):
             session_id=ctx.session_id or None,
         )
 
-        # 3. Long-term semantic search
+        # 3. Long-term search — respect health state
         ltm_hits: List[MemoryEntry] = []
-        if self._ltm is not None and self._emb is not None:
-            all_ltm = await self._ltm.all_entries()
-            if all_ltm:
-                scored = self._emb.top_k(
-                    query=ctx.user_input,
-                    entries=all_ltm,
-                    k=self._ltm_top_k,
-                    min_score=self._ltm_min_score,
-                )
-                ltm_hits = [entry for entry, _ in scored]
-        elif self._ltm is not None:
-            # Keyword fallback when no embeddings
-            ltm_hits = await self._ltm.search(ctx.user_input, top_k=self._ltm_top_k)
+        if self._ltm is not None and self._health_available():
+            try:
+                if self._emb is not None:
+                    # Semantic path: encode query, use vector search if Qdrant
+                    q_vec = self._emb.encode(ctx.user_input)
+                    if hasattr(self._ltm, "search_by_vector"):
+                        ltm_hits = await self._ltm.search_by_vector(  # type: ignore[attr-defined]
+                            vector=q_vec,
+                            top_k=self._ltm_top_k,
+                            score_threshold=self._ltm_min_score,
+                        )
+                    else:
+                        all_ltm = await self._ltm.all_entries()
+                        if all_ltm:
+                            scored = self._emb.top_k(
+                                query=ctx.user_input,
+                                entries=all_ltm,
+                                k=self._ltm_top_k,
+                                min_score=self._ltm_min_score,
+                            )
+                            ltm_hits = [entry for entry, _ in scored]
+                else:
+                    # Keyword fallback
+                    ltm_hits = await self._ltm.search(ctx.user_input, top_k=self._ltm_top_k)
+            except Exception:
+                ltm_hits = []   # MR-2: never propagate
 
         # 4. Merge: recent STM turns + LTM hits (deduplicated by id)
         seen = {e.id for e in recent}
@@ -116,6 +141,15 @@ class MemoryPipelineProvider(PipelineMemoryProvider):
                 seen.add(entry.id)
 
         ctx.memory_context = merged
+
+    def _health_available(self) -> bool:
+        """Return True when LTM should be queried based on health state."""
+        if self._ltm is None:
+            return False
+        monitor = getattr(self._ltm, "health_monitor", None)
+        if monitor is None:
+            return True   # non-Qdrant LTM has no health monitor, always available
+        return monitor.is_available
 
     # ── Accessors (for Brain and tests) ──────────────────────────────
 
@@ -139,8 +173,12 @@ __all__ = [
     "ShortTermMemoryAdapter",
     "LongTermMemory",
     "InMemoryLongTermMemory",
+    "QdrantLongTermMemory",
     "SearchResult",
     "EmbeddingService",
     "SimpleEmbeddingService",
+    "SentenceTransformerEmbeddingService",
+    "MemoryHealthMonitor",
+    "MemoryHealthState",
     "MemoryPipelineProvider",
 ]
