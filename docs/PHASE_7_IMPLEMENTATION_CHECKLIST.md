@@ -1,11 +1,56 @@
 # Phase 7 Implementation Checklist
 
-**Version**: 1.0  
+**Version**: 1.1  
 **Status**: In Progress  
-**Started**: —  
+**Started**: 2025-07-01  
 **Target**: v0.9.0
 
 This is the live progress tracker for Phase 7. Update checkboxes as work completes. Do not add new items without a corresponding ADR or research reference.
+
+---
+
+## Project Milestones
+
+| Milestone | Description | Status |
+|-----------|-------------|--------|
+| 1 | Foundation — Core, Config, Infrastructure | ✅ Complete |
+| 2 | Verified Trading Engine | ✅ Complete — `v0.7.1-trading-verified` |
+| 3 | AI Cognition Runtime | ✅ Complete — `foundation-v1` |
+| 4 | Intelligence Layer | 🔄 Phase 7 — in progress |
+
+---
+
+## Capability Milestones (Phase 7 success criteria)
+
+Progress is measured by capabilities, not lines of code.
+
+- [ ] Remembers past trades and conversations
+- [ ] Retrieves historical market context by semantic similarity
+- [ ] Learns from successful trades
+- [ ] Learns from failed trades
+- [ ] Explains its reasoning in plain language
+- [ ] Explains confidence with feature-level justification
+- [ ] Justifies recommendations with retrieved evidence
+- [ ] Adapts over time without modifying the frozen trading engine
+- [ ] Improves prediction accuracy through feedback loop
+
+---
+
+## System Readiness Review (Post Phase 7)
+
+Scheduled after Phase 7D is tagged. Not a code review — a full System Readiness Review.
+
+| Volume | Scope | Status |
+|--------|-------|--------|
+| 1 | Architecture — layering, dependencies, package boundaries | ⬜ Pending |
+| 2 | Algorithms — trading logic, forecasting, risk calculations | ⬜ Pending |
+| 3 | Trading Mathematics — independent formula verification | ⬜ Pending |
+| 4 | AI Cognition — memory, reasoning, agent orchestration | ⬜ Pending |
+| 5 | Memory — retrieval quality, latency, persistence | ⬜ Pending |
+| 6 | Security — secrets, validation, injection risks, dependencies | ⬜ Pending |
+| 7 | Performance — hotspots, scalability, memory usage | ⬜ Pending |
+| 8 | Production Readiness — logging, health checks, observability, recovery | ⬜ Pending |
+| **Overall** | **Go / No-Go for v1.0** | ⬜ Pending |
 
 ---
 
@@ -163,3 +208,4 @@ These must be true before any sub-phase is considered complete.
 | Version | Date | Change |
 |---------|------|--------|
 | 1.0 | 2025-07-01 | Initial checklist created from ADRs 002–006 and research 7.1–7.8 |
+| 1.1 | 2025-07-01 | Added project milestone table, capability milestones, System Readiness Review plan |
