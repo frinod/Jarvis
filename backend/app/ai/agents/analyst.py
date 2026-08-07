@@ -7,6 +7,13 @@ Handles requests classified as "analysis" intent or explicitly routed
 to the analyst capability. Domain data (symbols, indicators) travels
 through ExecutionContext.metadata only.
 
+Phase 7C update:
+  - RAG-aware: reads ctx.metadata["_rag_context"] (ContextAssembly) to
+    enrich analysis with retrieved market and strategy context blocks.
+  - Collaboration-aware: reads TradeSignal from AgentCollaborationBus
+    when TraderAgent has already run in the same pipeline pass.
+  - No interface changes -- all callers continue to work unchanged.
+
 Domain agnosticism at the interface level
 ------------------------------------------
   AnalystAgent.can_handle() reads intent from context.metadata["intent_type"].
@@ -15,10 +22,19 @@ Domain agnosticism at the interface level
 """
 from __future__ import annotations
 
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional
 
 from app.ai.agents.base import AgentPlan, AgentResult, BaseAgent, VerificationResult
+from app.ai.agents.collaboration import CollaborationContext
 from app.ai.runtime.context import ExecutionContext
+
+
+def _get_context_assembly_type():
+    try:
+        from app.ai.rag.context_builder import ContextAssembly
+        return ContextAssembly
+    except ImportError:
+        return None
 
 
 class AnalystAgent(BaseAgent):
@@ -53,11 +69,14 @@ class AnalystAgent(BaseAgent):
 
     async def execute(self, context: ExecutionContext) -> AgentResult:
         self.record_request(success=True)
+        goal     = context.active_goal or context.user_input
+        response = f"Analysis complete for: {goal}"
+        explanation = self._build_explanation(context)
         return AgentResult(
             agent_name=self.name,
-            response=f"Analysis complete for: {context.active_goal or context.user_input}",
+            response=response,
             confidence=0.7,
-            explanation="AnalystAgent applied technical reasoning to the available context.",
+            explanation=explanation,
             metadata={"intent": "analysis"},
         )
 
@@ -77,3 +96,31 @@ class AnalystAgent(BaseAgent):
 
     async def learn(self, result: AgentResult, outcome: dict) -> None:
         pass   # Phase 8: feed to LearningEngine
+
+    # ── RAG + collaboration enrichment ─────────────────────────────────
+
+    def _build_explanation(self, context: ExecutionContext) -> str:
+        parts = ["AnalystAgent applied technical reasoning to the available context."]
+
+        # RAG context enrichment
+        ContextAssembly = _get_context_assembly_type()
+        if ContextAssembly is not None:
+            assembly = context.metadata.get("_rag_context")
+            if assembly is not None and isinstance(assembly, ContextAssembly):
+                market_blocks = [
+                    b.content for b in assembly.blocks
+                    if b.block_type in ("market", "strategy")
+                ]
+                if market_blocks:
+                    parts.append(f"Retrieved context: {market_blocks[0][:150]}")
+
+        # Collaboration bus: read trade signal if TraderAgent already ran
+        bus = CollaborationContext.get_bus(context)
+        if bus is not None:
+            msg = bus.latest("trade_signal")
+            if msg is not None:
+                direction  = msg.payload.get("direction", "")
+                confidence = msg.payload.get("confidence", 0.0)
+                parts.append(f"TraderAgent signal: {direction} ({confidence:.0%})")
+
+        return " ".join(parts)

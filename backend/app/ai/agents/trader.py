@@ -6,6 +6,13 @@ TraderAgent -- trade signal generation and execution decision agent.
 Handles requests explicitly routed to the trader capability.
 Produces a TradeSignal in metadata -- never as a first-class field.
 
+Phase 7C update:
+  - RAG-aware: reads ctx.metadata["_rag_context"] (ContextAssembly) to
+    enrich signal rationale with retrieved market context blocks.
+  - Collaboration-aware: publishes TradeSignal to AgentCollaborationBus
+    so AnalystAgent and PlannerAgent can read it within the same run.
+  - No interface changes -- all callers continue to work unchanged.
+
 Domain agnosticism at the interface level
 ------------------------------------------
   TraderAgent.can_handle() reads from metadata["agent"] only.
@@ -19,7 +26,16 @@ from enum import Enum
 from typing import Any, Dict, List, Optional
 
 from app.ai.agents.base import AgentPlan, AgentResult, BaseAgent, VerificationResult
+from app.ai.agents.collaboration import AgentCollaborationBus, AgentMessage, CollaborationContext
 from app.ai.runtime.context import ExecutionContext
+
+# Lazy import to avoid circular dependency
+def _get_context_assembly_type():
+    try:
+        from app.ai.rag.context_builder import ContextAssembly
+        return ContextAssembly
+    except ImportError:
+        return None
 
 
 # ── TradeSignal ───────────────────────────────────────────────────────────────
@@ -85,11 +101,26 @@ class TraderAgent(BaseAgent):
     async def execute(self, context: ExecutionContext) -> AgentResult:
         self.record_request(success=True)
         signal = self._generate_signal(context)
+        rationale = self._enrich_rationale(signal, context)
+
+        # Publish to collaboration bus so other agents can read the signal
+        bus = CollaborationContext.get_bus(context)
+        if bus is not None:
+            bus.publish(AgentMessage(
+                sender=self.name,
+                message_type="trade_signal",
+                payload={
+                    "direction":  signal.direction.value,
+                    "confidence": signal.confidence,
+                    "rationale":  rationale,
+                },
+            ))
+
         return AgentResult(
             agent_name=self.name,
             response=f"Signal: {signal.direction.value.upper()} (confidence {signal.confidence:.0%})",
             confidence=signal.confidence,
-            explanation=signal.rationale,
+            explanation=rationale,
             metadata={"trade_signal": signal},
         )
 
@@ -115,6 +146,29 @@ class TraderAgent(BaseAgent):
 
     async def learn(self, result: AgentResult, outcome: dict) -> None:
         pass
+
+    # ── RAG enrichment ────────────────────────────────────────────────
+
+    def _enrich_rationale(self, signal: TradeSignal, context: ExecutionContext) -> str:
+        """
+        Enrich signal rationale with retrieved market context from RAG pipeline.
+        Falls back to signal.rationale when no ContextAssembly is present.
+        """
+        ContextAssembly = _get_context_assembly_type()
+        if ContextAssembly is None:
+            return signal.rationale
+        assembly = context.metadata.get("_rag_context")
+        if assembly is None or not isinstance(assembly, ContextAssembly):
+            return signal.rationale
+        # Extract market and strategy blocks only
+        market_blocks = [
+            b.content for b in assembly.blocks
+            if b.block_type in ("market", "strategy")
+        ]
+        if not market_blocks:
+            return signal.rationale
+        context_summary = " | ".join(market_blocks[:2])  # top 2 blocks
+        return f"{signal.rationale} Context: {context_summary[:200]}"
 
     # ── Signal generation ─────────────────────────────────────────────
 

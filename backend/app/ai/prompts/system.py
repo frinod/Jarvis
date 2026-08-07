@@ -3,19 +3,12 @@ app/ai/prompts/system.py
 =========================
 SystemPromptBuilder -- assembles the LLM message list for one pipeline request.
 
-Design
-------
-  - SystemPromptBuilder.build() takes an ExecutionContext and returns a
-    list of LLMMessage objects ready to pass to LLMGateway.
-  - Assembles: system prompt + memory context + conversation history +
-    thought chain (if available) + user input.
-  - Uses TemplateRegistry for the system prompt template.
-  - PipelineResponderAdapter bridges SystemPromptBuilder to PipelineResponder
-    ABC so ExecutionEngine can inject it without knowing the concrete class.
-
-Domain agnosticism
--------------------
-  No domain content. All domain data arrives via ExecutionContext.metadata.
+Phase 7B update:
+  - _build_memory() now accepts a ContextAssembly (from ContextBuilder) when
+    available, falling back to the raw MemoryEntry list for backward compat.
+  - BuilderConfig gains max_context_tokens (800 default, ADR-003) and
+    context_types filter for agent-selective context injection.
+  - No interface changes -- all callers continue to work unchanged.
 """
 from __future__ import annotations
 
@@ -30,17 +23,28 @@ from app.ai.runtime.llm_gateway import LLMGateway, LLMRequest
 from app.core.llm import LLMMessage
 
 
+# Lazy import to avoid circular dependency at module load
+def _get_context_assembly_type():
+    try:
+        from app.ai.rag.context_builder import ContextAssembly
+        return ContextAssembly
+    except ImportError:
+        return None
+
+
 # ── BuilderConfig ─────────────────────────────────────────────────────────────
 
 @dataclass
 class BuilderConfig:
     """Tuning parameters for SystemPromptBuilder."""
-    agent_name:          str   = "Kiro"
-    max_memory_entries:  int   = 5      # how many memory entries to include
-    include_thought_chain: bool = True  # include reasoning chain in prompt
-    max_thought_steps:   int   = 3      # how many thought steps to include
-    max_history_turns:   int   = 6      # how many conversation turns to include
-    system_template:     str   = "system_base"
+    agent_name:           str   = "Kiro"
+    max_memory_entries:   int   = 5
+    max_context_tokens:   int   = 800    # ADR-003 token budget
+    include_thought_chain: bool = True
+    max_thought_steps:    int   = 3
+    max_history_turns:    int   = 6
+    system_template:      str   = "system_base"
+    context_types:        Optional[List[str]] = None  # None = all types
 
 
 # ── SystemPromptBuilder ───────────────────────────────────────────────────────
@@ -120,6 +124,19 @@ class SystemPromptBuilder:
         return [LLMMessage(role=t.role, content=t.content) for t in turns]
 
     def _build_memory(self, ctx: ExecutionContext) -> Optional[LLMMessage]:
+        # Phase 7B: use ContextAssembly if stored in ctx.metadata
+        ContextAssembly = _get_context_assembly_type()
+        if ContextAssembly is not None:
+            assembly = ctx.metadata.get("_rag_context")
+            if assembly is not None and isinstance(assembly, ContextAssembly):
+                from app.ai.rag.context_builder import PromptContextAssembler
+                assembler = PromptContextAssembler()
+                text = assembler.format(assembly, include_types=self._cfg.context_types)
+                if text:
+                    return LLMMessage(role="user", content=f"Relevant context:\n{text}")
+                return None
+
+        # Phase 6 fallback: raw MemoryEntry list
         entries = ctx.memory_context[: self._cfg.max_memory_entries]
         if not entries:
             return None
@@ -129,8 +146,7 @@ class SystemPromptBuilder:
                 lines.append(f"- [{e.role.value}] {e.content}")
             else:
                 lines.append(f"- {str(e)}")
-        content = "Relevant context:\n" + "\n".join(lines)
-        return LLMMessage(role="user", content=content)
+        return LLMMessage(role="user", content="Relevant context:\n" + "\n".join(lines))
 
     def _build_chain(self, ctx: ExecutionContext) -> Optional[LLMMessage]:
         steps = ctx.thought_chain[: self._cfg.max_thought_steps]

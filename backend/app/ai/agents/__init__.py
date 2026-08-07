@@ -8,6 +8,7 @@ from app.ai.agents.analyst import AnalystAgent
 from app.ai.agents.researcher import ResearcherAgent
 from app.ai.agents.trader import TraderAgent, TradeSignal, SignalDirection
 from app.ai.agents.planner import PlannerAgent
+from app.ai.agents.collaboration import AgentMessage, AgentCollaborationBus, CollaborationContext
 
 __all__ = [
     "BaseAgent", "AgentPlan", "AgentResult", "VerificationResult", "AgentStatus",
@@ -15,4 +16,5 @@ __all__ = [
     "ResearcherAgent",
     "TraderAgent", "TradeSignal", "SignalDirection",
     "PlannerAgent",
+    "AgentMessage", "AgentCollaborationBus", "CollaborationContext",
 ]
