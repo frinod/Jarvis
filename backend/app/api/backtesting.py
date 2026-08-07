@@ -152,8 +152,12 @@ async def run_backtest(
         if ta.get("error"):
             continue
 
-        price  = candles[i]["c"]
-        date   = _ts_to_date(candles[i]["t"])
+        # Signal generated at close of bar i — execute at OPEN of bar i+1
+        # to avoid look-ahead bias (cannot trade at the close that generated the signal)
+        if i + 1 >= len(candles):
+            continue
+        price  = candles[i + 1]["o"]
+        date   = _ts_to_date(candles[i + 1]["t"])
         signal = signal_fn(ta)
 
         # Entry
@@ -196,9 +200,9 @@ async def run_backtest(
         portfolio_value = cash + position * price
         equity_curve.append({"date": date, "value": round(portfolio_value, 2)})
 
-    # Close any open position at last price
+    # Close any open position at last available price (next bar open after signal)
     if position > 0:
-        last_price = candles[-1]["c"]
+        last_price = candles[-1]["o"] if len(candles) > 0 else candles[-1]["c"]
         charges    = calculate_charges(last_price, position, "SELL", trade_mode)
         proceeds   = last_price * position - charges
         pnl        = round(proceeds - avg_buy * position, 2)

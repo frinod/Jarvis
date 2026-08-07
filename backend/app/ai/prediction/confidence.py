@@ -83,10 +83,13 @@ class ConfidenceScorer:
         parts:      List[str]        = []
 
         if prediction is not None:
-            weighted  += prediction.confidence * cfg.weight_prediction
+            # Normalise to [0,1] — guard against callers passing percentage (0-100)
+            pred_conf = prediction.confidence if prediction.confidence <= 1.0 else prediction.confidence / 100.0
+            pred_conf = max(0.0, min(1.0, pred_conf))
+            weighted  += pred_conf * cfg.weight_prediction
             total_w   += cfg.weight_prediction
-            components["prediction"] = prediction.confidence
-            parts.append(f"prediction={prediction.confidence:.2f}")
+            components["prediction"] = pred_conf
+            parts.append(f"prediction={pred_conf:.2f}")
 
         if ta_signal is not None:
             ta = max(0.0, min(1.0, float(ta_signal)))

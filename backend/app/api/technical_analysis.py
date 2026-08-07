@@ -413,8 +413,8 @@ def find_support_resistance(candles: List[Dict]) -> Dict[str, List[float]]:
     lows  = [c['l'] for c in candles]
     closes = [c['c'] for c in candles]
 
-    # Pivot points from last candle
-    last = candles[-1]
+    # Pivot points use PREVIOUS candle's HLC — not current bar
+    last = candles[-2] if len(candles) >= 2 else candles[-1]
     pivot = (last['h'] + last['l'] + last['c']) / 3
     r1 = round(2 * pivot - last['l'], 2)
     r2 = round(pivot + (last['h'] - last['l']), 2)
@@ -467,7 +467,8 @@ def compute_technical_analysis(candles: List[Dict]) -> Dict[str, Any]:
     fib_data  = _fibonacci(highs, lows)
     dc_data   = _donchian(highs, lows)
     kc_data   = _keltner(highs, lows, closes)
-    pivot_data = _pivot_points(highs[-1], lows[-1], closes[-1]) if len(candles) >= 2 else {}
+    # Pivot points use PREVIOUS candle's HLC — not current bar
+    pivot_data = _pivot_points(highs[-2], lows[-2], closes[-2]) if len(candles) >= 2 else {}
 
     # ── Accuracy indicators
     wr_vals   = _williams_r(highs, lows, closes)
@@ -541,7 +542,7 @@ def compute_technical_analysis(candles: List[Dict]) -> Dict[str, Any]:
     signals = []
 
     # RSI — fixed thresholds: <35 oversold, >65 overbought (not 45/55 which is neutral)
-    if rsi:
+    if rsi is not None:
         if rsi < 35:
             signals.append({"indicator": "RSI", "signal": "buy", "strength": "strong",
                              "value": rsi, "reason": f"RSI {rsi:.1f} — oversold territory"})
@@ -559,7 +560,7 @@ def compute_technical_analysis(candles: List[Dict]) -> Dict[str, Any]:
                              "value": rsi, "reason": f"RSI {rsi:.1f} — neutral zone"})
 
     # MACD — use relative threshold (% of price) not absolute 0.5
-    if macd is not None and sig is not None:
+    if macd is not None and sig is not None and hist is not None:
         macd_threshold = current_price * 0.0002  # 0.02% of price = relative
         if macd > sig and hist and hist > 0:
             signals.append({"indicator": "MACD", "signal": "buy",
@@ -584,7 +585,7 @@ def compute_technical_analysis(candles: List[Dict]) -> Dict[str, Any]:
                              "value": bb_width, "reason": f"BB squeeze ({bb_width}%) — big move imminent"})
 
     # EMA 9/21
-    if e9 and e21:
+    if e9 is not None and e21 is not None:
         if e9 > e21 and current_price > e9:
             signals.append({"indicator": "EMA 9/21", "signal": "buy", "strength": "moderate",
                              "value": round(e9, 2), "reason": f"EMA9 {e9:.2f} > EMA21 {e21:.2f} — bullish alignment"})
@@ -593,7 +594,7 @@ def compute_technical_analysis(candles: List[Dict]) -> Dict[str, Any]:
                              "value": round(e9, 2), "reason": f"EMA9 {e9:.2f} < EMA21 {e21:.2f} — bearish alignment"})
 
     # VWAP
-    if vwap:
+    if vwap is not None:
         if current_price > vwap:
             signals.append({"indicator": "VWAP", "signal": "buy", "strength": "weak",
                              "value": round(vwap, 2), "reason": f"Price above VWAP {vwap:.2f} — bullish bias"})
@@ -841,13 +842,13 @@ def _supertrend(highs: List[float], lows: List[float], closes: List[float], peri
         upper_band[i] = ub
         lower_band[i] = lb
 
-        # Direction
+        # Direction — compare against previous band values, not newly computed ones
         if supertrend[i - 1] is None:
             direction[i] = 1 if closes[i] > ub else -1
-        elif supertrend[i - 1] == upper_band[i - 1]:
-            direction[i] = 1 if closes[i] > ub else -1
-        else:
-            direction[i] = -1 if closes[i] < lb else 1
+        elif supertrend[i - 1] == upper_band[i - 1]:  # was bearish
+            direction[i] = 1 if closes[i] > upper_band[i - 1] else -1
+        else:  # was bullish
+            direction[i] = -1 if closes[i] < lower_band[i - 1] else 1
 
         supertrend[i] = lb if direction[i] == 1 else ub
 

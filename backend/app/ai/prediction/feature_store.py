@@ -77,8 +77,11 @@ class FeatureStore:
                 features[key] = 1.0 if value else 0.0
                 source_keys.append(key)
             elif isinstance(value, (int, float)):
-                features[key] = float(value)
-                source_keys.append(key)
+                fval = float(value)
+                # Skip non-finite values — inf/nan would corrupt model input
+                if fval == fval and abs(fval) != float('inf'):  # NaN check: NaN != NaN
+                    features[key] = fval
+                    source_keys.append(key)
             # Non-numeric: skip
 
         return FeatureVector(features=features, source_keys=source_keys)

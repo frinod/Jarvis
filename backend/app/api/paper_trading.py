@@ -202,8 +202,11 @@ def calculate_charges(price: float, qty: int, trade_type: str, trade_mode: str) 
     sebi       = SEBI_CHARGES * value
     gst        = GST_PCT * (brokerage + exchange)
     stamp      = STAMP_DUTY * value if trade_type == "BUY" else 0.0
-    stt_rate   = STT_INTRADAY if trade_mode == "intraday" else STT_PCT
-    stt        = stt_rate * value if trade_type == "SELL" else 0.0
+    # STT rules (NSE): delivery = 0.1% on both BUY and SELL; intraday = 0.025% on SELL only
+    if trade_mode == "intraday":
+        stt = STT_INTRADAY * value if trade_type == "SELL" else 0.0
+    else:
+        stt = STT_PCT * value  # delivery: applies on both sides
     return round(brokerage + exchange + sebi + gst + stamp + stt, 2)
 
 
@@ -624,7 +627,8 @@ def _sharpe_ratio(values: List[float], risk_free: float = 0.065) -> float:
         return 0.0
     import math
     avg_r = sum(returns) / len(returns)
-    std_r = (sum((r - avg_r) ** 2 for r in returns) / len(returns)) ** 0.5
+    # Use sample std dev (N-1) — correct for Sharpe ratio calculation
+    std_r = (sum((r - avg_r) ** 2 for r in returns) / max(len(returns) - 1, 1)) ** 0.5
     if std_r == 0:
         return 0.0
     daily_rf = risk_free / 252
@@ -640,5 +644,6 @@ def _volatility(values: List[float]) -> float:
     if not returns:
         return 0.0
     avg = sum(returns) / len(returns)
-    std = (sum((r - avg) ** 2 for r in returns) / len(returns)) ** 0.5
+    # Use sample std dev (N-1) — correct for annualised volatility
+    std = (sum((r - avg) ** 2 for r in returns) / max(len(returns) - 1, 1)) ** 0.5
     return round(std * math.sqrt(252) * 100, 2)

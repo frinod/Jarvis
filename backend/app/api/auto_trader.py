@@ -123,9 +123,13 @@ async def _scan_candidates() -> List[Dict]:
         sym      = stock["symbol"]
         full_sym = sym if "." in sym else f"{sym}.NS"
         try:
+            from app.api.data_quality import clean_candles
             chart   = await fetch_candles(full_sym, interval="5m", days=2)
-            candles = chart.get("candles", [])
-            if len(candles) < 26:
+            raw_candles = chart.get("candles", [])
+            if len(raw_candles) < 26:
+                return
+            candles, quality = clean_candles(raw_candles)
+            if len(candles) < 26 or quality.get("quality_score", 0) < 40:
                 return
 
             ta    = compute_technical_analysis(candles)

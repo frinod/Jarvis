@@ -116,8 +116,10 @@ def build_features(candles: List[Dict], ta: Dict[str, Any]) -> Optional[np.ndarr
 
     last_ts = candles[-1].get('t', 0)
     if last_ts:
-        ist_hour   = ((last_ts // 3600) + 5) % 24
-        ist_minute = (last_ts % 3600) // 60
+        # t is in milliseconds — convert to seconds first
+        ts_secs    = last_ts / 1000
+        ist_hour   = (int(ts_secs // 3600) % 24 + 5) % 24
+        ist_minute = int(ts_secs % 3600) // 60
         session_min = max(0, (ist_hour - 9) * 60 + ist_minute - 15)
         time_progress = min(session_min / 375.0, 1.0)
         is_opening = float(session_min <= 30)
