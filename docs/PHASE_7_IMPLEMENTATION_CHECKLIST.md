@@ -84,6 +84,12 @@ Scheduled after Phase 7D is tagged. Not a code review — a full System Readines
 - [ ] Unit: `QdrantMemory.retrieve()` returns top-k by cosine similarity
 - [ ] Integration: store a trade event, retrieve by semantic query
 - [ ] Performance: p95 retrieve latency < 100 ms on 10 000 entries
+- [ ] **Resilience** (`TestMemoryFailureIsolation` — all 5 required by ADR-002):
+  - [ ] Qdrant unavailable → trading signal still produced
+  - [ ] Embedding service failure → trading signal still produced
+  - [ ] Memory read timeout (>200 ms) → trading signal still produced
+  - [ ] Memory returns `[]` → trading signal still produced
+  - [ ] Memory returns malformed data → trading signal still produced
 
 ### Integration
 - [ ] Memory provider wired into `app/core/` via dependency injection

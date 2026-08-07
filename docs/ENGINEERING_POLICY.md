@@ -161,8 +161,25 @@ Any package not in this table requires a new ADR entry before installation.
 
 ---
 
+## Rule 11 — Intelligence Layer Resilience
+
+The AI layer is allowed to degrade gracefully. The trading engine is never allowed to degrade unsafely.
+
+This rule has three binding sub-rules:
+
+**11a — Forbidden dependency direction.** No component inside the trading engine (frozen files listed in Rule 1) may import, call, or depend on any Phase 7+ component: Qdrant, sentence-transformers, embeddings, vector search, RAG, agents, reasoning, or learning. The dependency arrow points one way only: trading engine produces signals, AI layer consumes them.
+
+**11b — Intelligence services must fail silently.** Any Phase 7+ service (memory, RAG, embeddings, agents, LLM) must catch its own exceptions, return a defined fallback result, and never propagate an error into the trading path. Fallback results are valid results, not error states.
+
+**11c — Full intelligence failure must leave trading intact.** If every intelligence service fails simultaneously (Qdrant down, embeddings down, RAG down, learning down, LLM down), the system must still produce a safe, deterministic trading decision from market data and the verified algorithms alone. This is the fault-tolerance baseline and must be verified by `TestMemoryFailureIsolation` in Phase 7A and extended in each subsequent sub-phase.
+
+The detailed resilience contract (health states, timeout budgets, write semantics) is specified in ADR-002.
+
+---
+
 ## Change Log
 
 | Version | Date | Change |
 |---------|------|--------|
 | 1.0 | 2025-07-01 | Initial policy — established after v0.7.1 baseline |
+| 1.1 | 2025-07-01 | Rule 11 — Intelligence Layer Resilience (three sub-rules, references ADR-002) |
