@@ -162,18 +162,28 @@ class TestTraderAgent:
 
     @pytest.mark.asyncio
     async def test_high_confidence_produces_buy_signal(self):
+        """With real forecast injected (UP direction), signal must be BUY."""
+        from app.ai.prediction.forecasting import ForecastResult
         agent = TraderAgent()
         ctx   = _ctx(agent="trader")
-        ctx.metadata["signal_confidence"] = 0.85
+        ctx.metadata["_forecast"] = ForecastResult(
+            direction="UP", confidence=85.0,
+            prob_up=85.0, prob_down=8.0, prob_flat=7.0,
+        )
         result = await agent.execute(ctx)
         signal = result.metadata["trade_signal"]
         assert signal.direction == SignalDirection.BUY
 
     @pytest.mark.asyncio
     async def test_low_confidence_produces_sell_signal(self):
+        """With real forecast injected (DOWN direction), signal must be SELL."""
+        from app.ai.prediction.forecasting import ForecastResult
         agent = TraderAgent()
         ctx   = _ctx(agent="trader")
-        ctx.metadata["signal_confidence"] = 0.2
+        ctx.metadata["_forecast"] = ForecastResult(
+            direction="DOWN", confidence=68.0,
+            prob_up=12.0, prob_down=68.0, prob_flat=20.0,
+        )
         result = await agent.execute(ctx)
         signal = result.metadata["trade_signal"]
         assert signal.direction == SignalDirection.SELL
@@ -189,9 +199,14 @@ class TestTraderAgent:
 
     @pytest.mark.asyncio
     async def test_verify_passes_on_good_signal(self):
+        """Verify passes when a real forecast produces a valid signal."""
+        from app.ai.prediction.forecasting import ForecastResult
         agent  = TraderAgent()
         ctx    = _ctx(agent="trader")
-        ctx.metadata["signal_confidence"] = 0.8
+        ctx.metadata["_forecast"] = ForecastResult(
+            direction="UP", confidence=80.0,
+            prob_up=80.0, prob_down=10.0, prob_flat=10.0,
+        )
         result = await agent.execute(ctx)
         vr     = await agent.verify(result)
         assert vr.passed is True

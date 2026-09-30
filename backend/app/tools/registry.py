@@ -94,6 +94,27 @@ class ShellTool(BaseTool):
             return ToolResult(success=False, output=None, error=str(e))
 
 
+class KiroAssistTool(BaseTool):
+    """Wraps kiro_tool.ask_kiro() as a registered BaseTool."""
+
+    def __init__(self):
+        super().__init__(
+            name="kiro_assist",
+            description="Ask Kiro CLI for coding help, architecture reasoning, and deep analysis",
+            category=ToolCategory.AUTOMATION,
+        )
+
+    async def execute(self, query: str = "", **params) -> ToolResult:
+        try:
+            from app.tools.kiro_tool import ask_kiro
+            result = await ask_kiro(query)
+            if result["success"]:
+                return ToolResult(success=True, output=result["response"])
+            return ToolResult(success=False, output=None, error=result["error"])
+        except Exception as e:
+            return ToolResult(success=False, output=None, error=str(e))
+
+
 class ToolRegistry:
     """Central registry for all available tools."""
 
@@ -115,6 +136,7 @@ class ToolRegistry:
         self.register(CodeGeneratorTool())
         self.register(ProjectScaffoldTool())
         self.register(ListWorkspaceTool())
+        self.register(KiroAssistTool())
 
     def register(self, tool: BaseTool):
         self._tools[tool.name] = tool

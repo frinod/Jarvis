@@ -25,7 +25,7 @@ class Settings(BaseSettings):
     openrouter_api_key: Optional[str] = None
 
     # Model names (defaults work great, change if needed)
-    gemini_model: str = "gemini-2.0-flash"
+    gemini_model: str = "gemini-2.5-flash-preview-05-20"
     groq_model: str = "llama-3.3-70b-versatile"
     deepseek_model: str = "deepseek-chat"
     openai_model: str = "gpt-4o-mini"

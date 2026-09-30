@@ -7,6 +7,9 @@ import uuid
 from typing import Dict, List, Optional, Any
 from dataclasses import dataclass, field, asdict
 
+# market_data.service is the canonical source for fetch_candles in this module
+from app.market_data.service import fetch_candles  # noqa: F401  (used by callers / _get_live_price path)
+
 # ── Constants ─────────────────────────────────────────────────
 BROKERAGE_PCT   = 0.0003
 STT_PCT         = 0.001
@@ -459,28 +462,36 @@ _pending_trade_confirmations: dict = {}
 
 
 async def ai_auto_trade(portfolio_id: str, symbol: str, budget_per_trade: float = 10000) -> dict:
-    """Analyse the stock and return a trade proposal requiring manual confirmation.
+    """Analyse the stock via XGBoost forecast and return a trade proposal requiring manual confirmation.
     Does NOT execute — returns a confirmation_id that must be approved via confirm_ai_trade().
     """
-    from app.market_data.service import fetch_candles
-    from app.api.technical_analysis import compute_technical_analysis
+    from app.api.forecaster import forecast
 
-    full_sym = symbol if "." in symbol else f"{symbol}.NS"
-    chart = await fetch_candles(full_sym, interval="15m", days=5)
-    if chart.get("error") or len(chart.get("candles", [])) < 26:
-        return {"error": "insufficient_data"}
+    result = await forecast(symbol)
 
-    candles = chart["candles"]
-    ta = compute_technical_analysis(candles)
-    if ta.get("error"):
-        return {"error": ta["error"]}
+    # Propagate data errors (stale, insufficient, etc.)
+    if result.get("error"):
+        return {"error": result["error"], "detail": result.get("reason", "")}
 
-    signal = ta["overall_signal"]
-    price  = ta["current_price"]
-    confidence = ta["confidence"]
+    fc      = result["forecast"]
+    direction  = fc["direction"]          # UP | DOWN | FLAT
+    confidence = fc["confidence"]
+    price      = fc["current_price"]
+
+    # Map XGBoost direction to trade signal
+    if direction == "UP":
+        signal = "BUY"
+    elif direction == "DOWN":
+        signal = "SELL"
+    else:
+        signal = "HOLD"
+
+    # Regime filter: respect regime warning from forecast
+    regime_warning = result.get("regime", {}).get("warning")
+    regime_adjusted = result.get("regime", {}).get("adjusted", False)
 
     if signal == "HOLD" or confidence < 55:
-        return {"status": "no_trade", "reason": f"Signal {signal} with {confidence}% confidence — no trade warranted, Sir."}
+        return {"status": "no_trade", "reason": f"XGBoost: {direction} at {confidence}% confidence — no trade warranted, Sir."}
 
     qty = max(1, int(budget_per_trade / price))
     trade_type = "BUY" if signal == "BUY" else "SELL"
@@ -490,34 +501,42 @@ async def ai_auto_trade(portfolio_id: str, symbol: str, budget_per_trade: float 
     if trade_type == "SELL" and sym_key not in (p.positions if p else {}):
         return {"status": "no_trade", "reason": "SELL signal detected but no open position exists, Sir."}
 
-    # Build confirmation payload — do NOT execute yet
     import uuid
     confirmation_id = str(uuid.uuid4())[:12]
     estimated_cost = round(price * qty + calculate_charges(price, qty, trade_type, "intraday"), 2)
 
+    ctx = result.get("context", {})
+    atr = ctx.get("atr") or price * 0.01
+    stop_loss = round(price - 1.5 * atr, 2) if signal == "BUY" else round(price + 1.5 * atr, 2)
+    target1   = fc.get("estimated_target", round(price + 2 * atr, 2))
+
     payload = {
-        "confirmation_id": confirmation_id,
-        "portfolio_id": portfolio_id,
-        "symbol": sym_key,
-        "trade_type": trade_type,
-        "qty": qty,
-        "price": price,
-        "estimated_cost": estimated_cost,
-        "signal": signal,
-        "confidence": confidence,
-        "trend": ta["trend"],
-        "stop_loss": ta["stop_loss"],
-        "target1": ta["target1"],
-        "target2": ta["target2"],
-        "risk_reward": ta["risk_reward"],
-        "score": ta["score"],
+        "confirmation_id":  confirmation_id,
+        "portfolio_id":     portfolio_id,
+        "symbol":           sym_key,
+        "trade_type":       trade_type,
+        "qty":              qty,
+        "price":            price,
+        "estimated_cost":   estimated_cost,
+        "signal":           signal,
+        "confidence":       confidence,
+        "direction":        direction,
+        "prob_up":          fc.get("prob_up"),
+        "prob_down":        fc.get("prob_down"),
+        "prob_flat":        fc.get("prob_flat"),
+        "stop_loss":        stop_loss,
+        "target1":          target1,
+        "regime_warning":   regime_warning,
+        "regime_adjusted":  regime_adjusted,
+        "wfv_useful":       result.get("validation", {}).get("wfv_useful"),
+        "wfv_accuracy":     result.get("validation", {}).get("wfv_accuracy"),
         "budget_per_trade": budget_per_trade,
     }
     _pending_trade_confirmations[confirmation_id] = payload
 
     return {
-        "status": "awaiting_confirmation",
-        "message": f"JARVIS has analysed {sym_key}. Awaiting your confirmation, Sir.",
+        "status":  "awaiting_confirmation",
+        "message": f"JARVIS XGBoost analysis complete for {sym_key}. Awaiting your confirmation, Sir.",
         "proposal": payload,
     }
 
@@ -540,42 +559,142 @@ async def confirm_ai_trade(confirmation_id: str, approved: bool) -> dict:
         source="ai",
         ai_signal=payload["signal"],
         ai_confidence=payload["confidence"],
-        notes=f"Auto-trade confirmed: {payload['trend']} | Score: {payload['score']}",
+        notes=f"XGBoost auto-trade: {payload['direction']} | conf={payload['confidence']}% | wfv={payload.get('wfv_accuracy')}%",
     )
 
+    # Record prediction in model_validator for later resolution
+    from app.api.model_validator import record_prediction as _record
+    now = time.time()
+    pred_id = _record(
+        symbol          = payload["symbol"],
+        signal          = payload["signal"],
+        confidence      = payload["confidence"],
+        price_at_signal = payload["price"],
+        timestamp       = now,
+        horizon_minutes = 30,
+        source          = "xgboost",
+        direction       = payload.get("direction"),
+        prob_up         = payload.get("prob_up"),
+        prob_down       = payload.get("prob_down"),
+        prob_flat       = payload.get("prob_flat"),
+        stop_loss       = payload.get("stop_loss"),
+        target          = payload.get("target1"),
+        regime          = None,   # not stored in payload; available in forecast result
+        wfv_accuracy    = payload.get("wfv_accuracy"),
+        wfv_useful      = payload.get("wfv_useful"),
+    )
+
+    # Keep lightweight in-memory entry for backward compat; pred_id links to full record
     _ai_predictions.append({
-        "symbol": payload["symbol"],
-        "signal": payload["signal"],
-        "confidence": payload["confidence"],
+        "pred_id":        pred_id,
+        "symbol":         payload["symbol"],
+        "signal":         payload["signal"],
+        "confidence":     payload["confidence"],
         "price_at_signal": payload["price"],
-        "target": payload["target1"],
-        "stop_loss": payload["stop_loss"],
-        "timestamp": time.time(),
-        "outcome": None,
+        "target":         payload["target1"],
+        "stop_loss":      payload["stop_loss"],
+        "timestamp":      now,
+        "horizon_due_ts": now + 30 * 60,
     })
 
-    return {**result, "message": "Trade executed as confirmed, Sir."}
+    return {**result, "pred_id": pred_id, "message": "Trade executed as confirmed, Sir."}
 
 
 def get_ai_self_evaluation() -> Dict:
-    """AI evaluates its own prediction accuracy."""
-    total = len(_ai_predictions)
-    if total == 0:
-        return {"total_predictions": 0, "message": "No AI predictions recorded yet"}
+    """AI evaluates its own prediction accuracy using the model_validator records."""
+    from app.api.model_validator import _results_path, _load_records, RESULTS_DIR
+    import os
 
-    evaluated = [p for p in _ai_predictions if p.get("outcome") is not None]
-    correct_dir = [p for p in evaluated if p["outcome"] == "correct"]
-    target_hit  = [p for p in evaluated if p.get("target_hit")]
-    sl_hit      = [p for p in evaluated if p.get("sl_hit")]
+    all_records: List[Dict] = []
+    try:
+        if os.path.isdir(RESULTS_DIR):
+            for fname in os.listdir(RESULTS_DIR):
+                if fname.endswith("_wfv.json"):
+                    all_records.extend(_load_records(os.path.join(RESULTS_DIR, fname)))
+    except Exception:
+        pass
+
+    # Only count records that came from paper-trading (source=xgboost, not WFV backtest)
+    live_preds = [r for r in all_records if r.get("source") == "xgboost"]
+    total      = len(live_preds)
+
+    if total == 0:
+        return {
+            "total_predictions": 0,
+            "evaluated":         0,
+            "pending":           0,
+            "correct":           0,
+            "incorrect":         0,
+            "accuracy":          None,
+            "avg_confidence":    None,
+            "message":           "No AI predictions recorded yet",
+        }
+
+    now        = time.time()
+    resolved   = [r for r in live_preds if r.get("outcome") == "resolved"]
+    pending    = [r for r in live_preds if r.get("outcome") is None and r.get("horizon_due_ts", 0) > now]
+    due        = [r for r in live_preds if r.get("outcome") is None and r.get("horizon_due_ts", 0) <= now]
+    correct    = [r for r in resolved if r.get("correct")]
+    incorrect  = [r for r in resolved if r.get("correct") is False]
+    accuracy   = round(len(correct) / len(resolved) * 100, 1) if resolved else None
+    avg_conf   = round(sum(r["confidence"] for r in live_preds) / total, 1)
+
+    recent = sorted(live_preds, key=lambda r: r.get("timestamp", 0), reverse=True)[:10]
 
     return {
         "total_predictions": total,
-        "evaluated": len(evaluated),
-        "direction_accuracy": round(len(correct_dir) / len(evaluated) * 100, 1) if evaluated else 0,
-        "target_hit_rate": round(len(target_hit) / len(evaluated) * 100, 1) if evaluated else 0,
-        "stop_loss_hit_rate": round(len(sl_hit) / len(evaluated) * 100, 1) if evaluated else 0,
-        "avg_confidence": round(sum(p["confidence"] for p in _ai_predictions) / total, 1),
-        "recent_predictions": _ai_predictions[-10:][::-1],
+        "evaluated":         len(resolved),
+        "pending":           len(pending),
+        "due_for_resolution": len(due),
+        "correct":           len(correct),
+        "incorrect":         len(incorrect),
+        "accuracy":          accuracy,
+        "avg_confidence":    avg_conf,
+        "recent_predictions": recent,
+    }
+
+
+async def resolve_pending_predictions() -> Dict:
+    """
+    Fetch live prices and resolve any predictions whose horizon has elapsed.
+    Safe to call repeatedly — already-resolved predictions are skipped.
+    Returns a summary of what was resolved.
+    """
+    from app.api.model_validator import get_pending_predictions, resolve_prediction
+
+    pending = get_pending_predictions()
+    if not pending:
+        return {"resolved": 0, "failed": 0, "message": "No predictions due for resolution"}
+
+    resolved_count = 0
+    failed_count   = 0
+    now = time.time()
+
+    for pred in pending:
+        symbol = pred["symbol"]
+        pred_id = pred["id"]
+        try:
+            price = await _get_live_price(symbol)
+            if price is None or price <= 0:
+                failed_count += 1
+                continue
+            result = resolve_prediction(
+                symbol          = symbol,
+                pred_id         = pred_id,
+                actual_price    = price,
+                actual_price_ts = now,
+            )
+            if result and result.get("outcome") == "resolved":
+                resolved_count += 1
+            else:
+                failed_count += 1
+        except Exception:
+            failed_count += 1
+
+    return {
+        "resolved": resolved_count,
+        "failed":   failed_count,
+        "checked":  len(pending),
     }
 
 

@@ -671,7 +671,11 @@ class TestRAGAwareTrader:
     async def test_execute_returns_agent_result(self):
         agent = TraderAgent()
         ctx   = _ctx()
-        ctx.metadata["signal_confidence"] = 0.8
+        from app.ai.prediction.forecasting import ForecastResult
+        ctx.metadata["_forecast"] = ForecastResult(
+            direction="UP", confidence=80.0,
+            prob_up=80.0, prob_down=10.0, prob_flat=10.0,
+        )
         result = await agent.execute(ctx)
         assert result.agent_name == "trader"
         assert result.confidence == 0.8
@@ -680,7 +684,11 @@ class TestRAGAwareTrader:
     async def test_execute_without_rag_uses_base_rationale(self):
         agent = TraderAgent()
         ctx   = _ctx()
-        ctx.metadata["signal_confidence"] = 0.8
+        from app.ai.prediction.forecasting import ForecastResult
+        ctx.metadata["_forecast"] = ForecastResult(
+            direction="UP", confidence=80.0,
+            prob_up=80.0, prob_down=10.0, prob_flat=10.0,
+        )
         result = await agent.execute(ctx)
         # No _rag_context in metadata — rationale is the base signal rationale
         assert "Context:" not in result.explanation or True  # graceful either way
@@ -690,7 +698,11 @@ class TestRAGAwareTrader:
     async def test_execute_with_rag_enriches_rationale(self):
         agent    = TraderAgent()
         ctx      = _ctx()
-        ctx.metadata["signal_confidence"] = 0.8
+        from app.ai.prediction.forecasting import ForecastResult
+        ctx.metadata["_forecast"] = ForecastResult(
+            direction="UP", confidence=80.0,
+            prob_up=80.0, prob_down=10.0, prob_flat=10.0,
+        )
         ctx.metadata["_rag_context"]      = _make_assembly()
         result   = await agent.execute(ctx)
         # Rationale should include market context
@@ -701,7 +713,11 @@ class TestRAGAwareTrader:
     async def test_execute_with_empty_rag_blocks_no_enrichment(self):
         agent    = TraderAgent()
         ctx      = _ctx()
-        ctx.metadata["signal_confidence"] = 0.8
+        from app.ai.prediction.forecasting import ForecastResult
+        ctx.metadata["_forecast"] = ForecastResult(
+            direction="UP", confidence=80.0,
+            prob_up=80.0, prob_down=10.0, prob_flat=10.0,
+        )
         # Assembly with only conversation blocks (no market/strategy)
         assembly = _make_assembly(blocks=[
             ContextBlock(block_type="conversation", content="hello", importance=0.5),
@@ -715,7 +731,11 @@ class TestRAGAwareTrader:
     async def test_execute_publishes_to_bus(self):
         agent = TraderAgent()
         ctx   = _ctx()
-        ctx.metadata["signal_confidence"] = 0.5   # neutral → HOLD
+        from app.ai.prediction.forecasting import ForecastResult
+        ctx.metadata["_forecast"] = ForecastResult(
+            direction="FLAT", confidence=50.0,
+            prob_up=20.0, prob_down=30.0, prob_flat=50.0,
+        )
         bus   = CollaborationContext.attach(ctx)
         await agent.execute(ctx)
         msgs = bus.get_messages(message_type="trade_signal")
@@ -727,7 +747,11 @@ class TestRAGAwareTrader:
     async def test_execute_no_bus_does_not_raise(self):
         agent = TraderAgent()
         ctx   = _ctx()
-        ctx.metadata["signal_confidence"] = 0.8
+        from app.ai.prediction.forecasting import ForecastResult
+        ctx.metadata["_forecast"] = ForecastResult(
+            direction="UP", confidence=80.0,
+            prob_up=80.0, prob_down=10.0, prob_flat=10.0,
+        )
         # No bus attached — must not raise
         result = await agent.execute(ctx)
         assert result is not None
@@ -736,7 +760,11 @@ class TestRAGAwareTrader:
     async def test_buy_signal_at_high_confidence(self):
         agent = TraderAgent()
         ctx   = _ctx()
-        ctx.metadata["signal_confidence"] = 0.85
+        from app.ai.prediction.forecasting import ForecastResult
+        ctx.metadata["_forecast"] = ForecastResult(
+            direction="UP", confidence=85.0,
+            prob_up=85.0, prob_down=8.0, prob_flat=7.0,
+        )
         result = await agent.execute(ctx)
         signal = result.metadata["trade_signal"]
         assert signal.direction == SignalDirection.BUY
@@ -745,7 +773,11 @@ class TestRAGAwareTrader:
     async def test_sell_signal_at_low_confidence(self):
         agent = TraderAgent()
         ctx   = _ctx()
-        ctx.metadata["signal_confidence"] = 0.2
+        from app.ai.prediction.forecasting import ForecastResult
+        ctx.metadata["_forecast"] = ForecastResult(
+            direction="DOWN", confidence=68.0,
+            prob_up=12.0, prob_down=68.0, prob_flat=20.0,
+        )
         result = await agent.execute(ctx)
         signal = result.metadata["trade_signal"]
         assert signal.direction == SignalDirection.SELL
@@ -754,7 +786,11 @@ class TestRAGAwareTrader:
     async def test_hold_signal_at_neutral_confidence(self):
         agent = TraderAgent()
         ctx   = _ctx()
-        ctx.metadata["signal_confidence"] = 0.5
+        from app.ai.prediction.forecasting import ForecastResult
+        ctx.metadata["_forecast"] = ForecastResult(
+            direction="FLAT", confidence=50.0,
+            prob_up=20.0, prob_down=30.0, prob_flat=50.0,
+        )
         result = await agent.execute(ctx)
         signal = result.metadata["trade_signal"]
         assert signal.direction == SignalDirection.HOLD
@@ -763,7 +799,11 @@ class TestRAGAwareTrader:
     async def test_verify_passes_for_valid_signal(self):
         agent  = TraderAgent()
         ctx    = _ctx()
-        ctx.metadata["signal_confidence"] = 0.8
+        from app.ai.prediction.forecasting import ForecastResult
+        ctx.metadata["_forecast"] = ForecastResult(
+            direction="UP", confidence=80.0,
+            prob_up=80.0, prob_down=10.0, prob_flat=10.0,
+        )
         result = await agent.execute(ctx)
         vr     = await agent.verify(result)
         assert vr.passed is True
@@ -784,9 +824,14 @@ class TestRAGAwareAnalyst:
     async def test_execute_returns_agent_result(self):
         agent  = AnalystAgent()
         ctx    = _ctx("analyse RELIANCE")
+        from app.ai.prediction.forecasting import ForecastResult
+        ctx.metadata["_forecast"] = ForecastResult(
+            direction="UP", confidence=70.0,
+            prob_up=70.0, prob_down=15.0, prob_flat=15.0,
+        )
         result = await agent.execute(ctx)
         assert result.agent_name == "analyst"
-        assert result.confidence == 0.7
+        assert abs(result.confidence - 0.7) < 0.001
 
     @pytest.mark.asyncio
     async def test_execute_without_rag_base_explanation(self):
@@ -899,7 +944,11 @@ class TestMultiAgentCollaboration:
         trader  = TraderAgent()
         analyst = AnalystAgent()
         ctx     = _ctx("market analysis request")
-        ctx.metadata["signal_confidence"] = 0.82
+        from app.ai.prediction.forecasting import ForecastResult
+        ctx.metadata["_forecast"] = ForecastResult(
+            direction="UP", confidence=82.0,
+            prob_up=82.0, prob_down=10.0, prob_flat=8.0,
+        )
 
         # Attach collaboration bus
         bus = CollaborationContext.attach(ctx)
@@ -952,7 +1001,11 @@ class TestMultiAgentCollaboration:
         trader  = TraderAgent()
         analyst = AnalystAgent()
         ctx     = _ctx("shared context test")
-        ctx.metadata["signal_confidence"] = 0.8
+        from app.ai.prediction.forecasting import ForecastResult
+        ctx.metadata["_forecast"] = ForecastResult(
+            direction="UP", confidence=80.0,
+            prob_up=80.0, prob_down=10.0, prob_flat=10.0,
+        )
         ctx.metadata["_rag_context"]      = _make_assembly()
         CollaborationContext.attach(ctx)
 
@@ -1032,7 +1085,11 @@ class TestConfidencePropagation:
     async def test_trader_confidence_matches_signal_confidence(self):
         agent = TraderAgent()
         ctx   = _ctx()
-        ctx.metadata["signal_confidence"] = 0.72
+        from app.ai.prediction.forecasting import ForecastResult
+        ctx.metadata["_forecast"] = ForecastResult(
+            direction="UP", confidence=72.0,
+            prob_up=72.0, prob_down=15.0, prob_flat=13.0,
+        )
         result = await agent.execute(ctx)
         assert result.confidence == 0.72
         assert result.metadata["trade_signal"].confidence == 0.72
@@ -1055,7 +1112,11 @@ class TestIntegrationPipeline:
         analyst    = AnalystAgent()
 
         ctx = _ctx("analyse and trade RELIANCE")
-        ctx.metadata["signal_confidence"] = 0.82
+        from app.ai.prediction.forecasting import ForecastResult
+        ctx.metadata["_forecast"] = ForecastResult(
+            direction="UP", confidence=82.0,
+            prob_up=82.0, prob_down=10.0, prob_flat=8.0,
+        )
         ctx.metadata["_rag_context"]      = _make_assembly()
         CollaborationContext.attach(ctx)
 
@@ -1099,7 +1160,11 @@ class TestIntegrationPipeline:
 
         cot = ChainOfThought()
         ctx = _ctx("log this reasoning")
-        ctx.metadata["signal_confidence"] = 0.75
+        from app.ai.prediction.forecasting import ForecastResult
+        ctx.metadata["_forecast"] = ForecastResult(
+            direction="UP", confidence=75.0,
+            prob_up=75.0, prob_down=12.0, prob_flat=13.0,
+        )
         cot.think(ctx)
 
         trace = await logger.log(ctx, outcome="success")
@@ -1124,7 +1189,11 @@ class TestIntegrationPipeline:
         trader  = TraderAgent()
         analyst = AnalystAgent()
         ctx     = _ctx("conversation only")
-        ctx.metadata["signal_confidence"] = 0.8
+        from app.ai.prediction.forecasting import ForecastResult
+        ctx.metadata["_forecast"] = ForecastResult(
+            direction="UP", confidence=80.0,
+            prob_up=80.0, prob_down=10.0, prob_flat=10.0,
+        )
         ctx.metadata["_rag_context"] = _make_assembly(blocks=[
             ContextBlock(block_type="conversation", content="previous chat", importance=0.5),
         ])

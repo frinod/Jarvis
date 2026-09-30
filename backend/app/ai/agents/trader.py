@@ -174,29 +174,83 @@ class TraderAgent(BaseAgent):
 
     def _generate_signal(self, context: ExecutionContext) -> TradeSignal:
         """
-        Derive a signal from context confidence and metadata.
-        Phase 6D+: replace with FeatureStore + ForecastingEngine.
+        Derive a trade signal from the real XGBoost forecast result.
+
+        The forecast result is injected into context.metadata["_forecast"]
+        by the caller (AI Discovery, paper trading, or any orchestration layer)
+        before the agent runs.  If no forecast is present the agent returns
+        HOLD — it never fabricates a directional signal.
         """
-        # Use context confidence as the signal strength proxy
-        base_conf = context.confidence if context.confidence > 0.0 else 0.5
+        from app.ai.prediction.forecasting import ForecastResult
 
-        # Allow metadata override for testing
-        override = context.metadata.get("signal_confidence")
-        if override is not None:
-            base_conf = float(override)
+        raw_forecast = context.metadata.get("_forecast")
 
-        if base_conf >= self.BUY_THRESHOLD:
-            direction = SignalDirection.BUY
-            rationale = f"High confidence ({base_conf:.0%}) supports a buy signal."
-        elif base_conf <= self.SELL_THRESHOLD:
-            direction = SignalDirection.SELL
-            rationale = f"Low confidence ({base_conf:.0%}) supports a sell signal."
+        # ── No forecast injected ──────────────────────────────────────
+        if raw_forecast is None:
+            return TradeSignal(
+                direction=SignalDirection.HOLD,
+                confidence=0.0,
+                rationale="No forecast available — holding. Inject _forecast into context.metadata to enable signal generation.",
+                metadata={"source": "no_forecast"},
+            )
+
+        # ── Normalise: accept both ForecastResult and raw dict ────────
+        if isinstance(raw_forecast, dict):
+            fr = ForecastResult.from_dict(raw_forecast)
+        elif isinstance(raw_forecast, ForecastResult):
+            fr = raw_forecast
         else:
-            direction = SignalDirection.HOLD
-            rationale = f"Neutral confidence ({base_conf:.0%}) -- hold position."
+            return TradeSignal(
+                direction=SignalDirection.HOLD,
+                confidence=0.0,
+                rationale="Forecast result has unexpected type — holding.",
+                metadata={"source": "bad_forecast_type"},
+            )
+
+        # ── Forecasting failure → safe no-trade ───────────────────────
+        if not fr.is_valid:
+            return TradeSignal(
+                direction=SignalDirection.HOLD,
+                confidence=0.0,
+                rationale=f"Forecast unavailable ({fr.error or 'unknown'}) — holding.",
+                metadata={"source": "forecast_error", "error": fr.error},
+            )
+
+        # ── Map real model direction to trade signal ───────────────────
+        direction_map = {
+            "BUY":  SignalDirection.BUY,
+            "SELL": SignalDirection.SELL,
+            "HOLD": SignalDirection.HOLD,
+        }
+        direction  = direction_map.get(fr.trade_signal, SignalDirection.HOLD)
+        confidence = round(fr.confidence / 100.0, 3)   # normalise 0-100 → 0-1
+
+        regime_note = f" Regime: {fr.regime_label or fr.regime}." if fr.regime != "unknown" else ""
+        mtf_note    = f" MTF: {fr.mtf_confluence}." if fr.mtf_confluence else ""
+        wfv_note    = f" WFV accuracy: {fr.wfv_accuracy:.1f}%." if fr.wfv_accuracy is not None else ""
+
+        rationale = (
+            f"XGBoost model: {fr.direction} ({fr.confidence:.1f}% confidence). "
+            f"TA signal: {fr.ta_signal}.{regime_note}{mtf_note}{wfv_note}"
+        )
 
         return TradeSignal(
             direction=direction,
-            confidence=round(base_conf, 3),
+            confidence=confidence,
             rationale=rationale,
+            metadata={
+                "source":        "xgboost",
+                "model_name":    fr.model_name,
+                "direction":     fr.direction,
+                "prob_up":       fr.prob_up,
+                "prob_down":     fr.prob_down,
+                "prob_flat":     fr.prob_flat,
+                "regime":        fr.regime,
+                "regime_adjusted": fr.regime_adjusted,
+                "mtf_confluence": fr.mtf_confluence,
+                "entry_price":   fr.entry_price,
+                "stop_loss":     fr.stop_loss,
+                "target1":       fr.target1,
+                "wfv_accuracy":  fr.wfv_accuracy,
+            },
         )

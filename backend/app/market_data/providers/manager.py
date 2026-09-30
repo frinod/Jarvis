@@ -60,7 +60,8 @@ class ProviderManager:
         from_ts:  int,
         to_ts:    int,
     ) -> CandleResult:
-        """Try providers in priority order until one succeeds."""
+        """Try providers in priority order until one succeeds with fresh data."""
+        from app.market_data.validator import check_candle_freshness
         last_error = "No providers registered"
         for provider in self._providers:
             try:
@@ -68,19 +69,40 @@ class ProviderManager:
                     log.debug(f"[ProviderManager] {provider.name} unavailable, skipping")
                     continue
                 result = await provider.fetch_candles(symbol, interval, from_ts, to_ts)
-                if result.ok:
-                    if provider.name != self._providers[0].name:
-                        log.info(
-                            f"[ProviderManager] {symbol} served by fallback: {provider.name}"
-                        )
-                    return result
-                last_error = result.error or "empty result"
-                log.debug(f"[ProviderManager] {provider.name} failed for {symbol}: {last_error}")
+                if not result.ok:
+                    last_error = result.error or "empty result"
+                    log.debug(f"[ProviderManager] {provider.name} failed for {symbol}: {last_error}")
+                    continue
+
+                # Freshness gate: reject stale data during market hours
+                # so the next provider (Yahoo) gets a chance to serve fresh data.
+                freshness = check_candle_freshness(result.candles)
+                if not freshness.is_fresh:
+                    log.info(
+                        f"[ProviderManager] {provider.name} data for {symbol} is "
+                        f"{freshness.status} ({freshness.age_minutes:.0f}min old) "
+                        f"— trying next provider"
+                    )
+                    last_error = f"{provider.name}_data_{freshness.status.lower()}"
+                    # Attach freshness info to result for diagnostics
+                    result.freshness_status = freshness.status
+                    # Only skip if market is open — outside hours stale is fine
+                    if freshness.market_open:
+                        continue
+
+                if provider.name != self._providers[0].name:
+                    log.info(
+                        f"[ProviderManager] {symbol} served by fallback: {provider.name}"
+                    )
+                # Attach freshness status for callers
+                result.freshness_status = freshness.status
+                return result
+
             except Exception as e:
                 last_error = str(e)
                 log.warning(f"[ProviderManager] {provider.name} exception: {e}")
 
-        # All providers failed
+        # All providers failed or returned stale data
         return CandleResult(
             symbol=symbol, interval=interval, candles=[],
             source="none", from_ts=from_ts, to_ts=to_ts,

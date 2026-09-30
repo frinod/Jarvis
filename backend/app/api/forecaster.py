@@ -116,14 +116,18 @@ def build_features(candles: List[Dict], ta: Dict[str, Any]) -> Optional[np.ndarr
 
     last_ts = candles[-1].get('t', 0)
     if last_ts:
-        # t is in milliseconds — convert to seconds first
-        ts_secs    = last_ts / 1000
-        ist_hour   = (int(ts_secs // 3600) % 24 + 5) % 24
-        ist_minute = int(ts_secs % 3600) // 60
-        session_min = max(0, (ist_hour - 9) * 60 + ist_minute - 15)
+        # t is Unix milliseconds UTC.
+        # IST = UTC + 5 hours 30 minutes = UTC + 19800 seconds.
+        _IST_OFFSET_SECS = 19800
+        ts_secs_utc  = last_ts / 1000
+        ts_secs_ist  = ts_secs_utc + _IST_OFFSET_SECS
+        ist_hour     = int(ts_secs_ist // 3600) % 24
+        ist_minute   = int(ts_secs_ist % 3600) // 60
+        # NSE session: 09:15 – 15:30 IST = 375 minutes
+        session_min  = max(0, (ist_hour - 9) * 60 + ist_minute - 15)
         time_progress = min(session_min / 375.0, 1.0)
-        is_opening = float(session_min <= 30)
-        is_closing = float(session_min >= 345)
+        is_opening   = float(session_min <= 30)
+        is_closing   = float(session_min >= 345)
     else:
         time_progress = 0.5
         is_opening    = 0.0
@@ -200,12 +204,9 @@ class StockForecaster:
             feats = build_features(candles[:i + 1], ta_history[i])
             if feats is None:
                 continue
-            # ATR-relative threshold — avoids 80% FLAT labels on low-volatility stocks
-            price_i = candles[i]["c"]
-            atr_i   = ta_history[i].get("indicators", {}).get("atr") or price_i * 0.01
-            threshold = max(atr_i / price_i * 0.5, 0.002)  # at least 0.2%, at most 0.5 ATR
-            future_ret = (candles[i + horizon]['c'] - candles[i]['c']) / candles[i]['c']
-            label = 1 if future_ret > threshold else (0 if future_ret < -threshold else 2)
+            label = compute_prediction_label(candles, ta_history, i, horizon)
+            if label is None:
+                continue
             X.append(feats)
             y.append(label)
 
@@ -296,6 +297,59 @@ class StockForecaster:
         }
 
 
+# ── Shared label function ────────────────────────────────────
+# Used by both StockForecaster.train() and walk_forward_test() so that
+# training and validation always measure the same target definition.
+
+def compute_prediction_label(
+    candles: List[Dict],
+    ta_history: List[Dict],
+    i: int,
+    horizon: int,
+) -> Optional[int]:
+    """
+    Compute the directional label for candle index i using only information
+    available at bar i (no future data).
+
+    Label encoding:
+        1 = UP   (future_return >  +threshold)
+        0 = DOWN (future_return <  -threshold)
+        2 = FLAT (|future_return| <= threshold)
+
+    Threshold is ATR-relative to avoid 80%+ FLAT labels on low-volatility
+    stocks.  ATR is read from ta_history[i] which was computed on
+    candles[:i+1] — no look-ahead.
+
+    Returns None when the label cannot be computed (missing data, horizon
+    extends beyond the candle array, etc.).
+    """
+    if i + horizon >= len(candles):
+        return None
+    if i >= len(ta_history):
+        return None
+    if ta_history[i].get("error"):
+        return None
+
+    price_i = candles[i]["c"]
+    if not price_i:
+        return None
+
+    # ATR from ta_history[i] — computed on candles[:i+1], no future info.
+    atr_i = ta_history[i].get("indicators", {}).get("atr")
+    if not atr_i:
+        atr_i = price_i * 0.01   # fallback: 1% of price
+
+    # Same formula as training: at least 0.2%, capped at 0.5 ATR
+    threshold = max(atr_i / price_i * 0.5, 0.002)
+
+    future_ret = (candles[i + horizon]["c"] - price_i) / price_i
+    if future_ret > threshold:
+        return 1   # UP
+    if future_ret < -threshold:
+        return 0   # DOWN
+    return 2       # FLAT
+
+
 _forecasters: Dict[str, StockForecaster] = {}
 
 
@@ -323,6 +377,22 @@ async def forecast(symbol: str, horizon: int = 30) -> Dict[str, Any]:
     chart = await fetch_candles(full_symbol, interval="5m", days=10)
     if chart.get("error") or len(chart.get("candles", [])) < 30:
         return {"error": "insufficient_data", "symbol": symbol}
+
+    # ── Freshness gate — never forecast on stale intraday data ────────────
+    from app.market_data.validator import check_candle_freshness
+    freshness = check_candle_freshness(chart["candles"])
+    if not freshness.is_fresh:
+        return {
+            "error":          "DATA_STALE",
+            "symbol":         symbol,
+            "data_status":    freshness.status,
+            "candle_age_min": round(freshness.age_minutes, 1),
+            "reason":         (
+                f"Latest candle is {freshness.age_minutes:.0f} min old "
+                f"during active market session. "
+                f"Live data unavailable — forecast suppressed to avoid stale-data signal."
+            ),
+        }
 
     # ── Data quality gate ─────────────────────────────────────────
     candles, quality_report = clean_candles(chart["candles"])

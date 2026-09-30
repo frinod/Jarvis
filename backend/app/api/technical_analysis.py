@@ -1,6 +1,6 @@
 """Technical Analysis Engine — indicators, candlestick & chart patterns."""
 from __future__ import annotations
-from typing import Dict, List, Any
+from typing import Dict, List, Any, Optional
 import numpy as np
 
 
@@ -104,14 +104,56 @@ def _stochastic(highs: List[float], lows: List[float], closes: List[float], k_pe
     return {"k": k, "d": d}
 
 
-def _vwap(highs: List[float], lows: List[float], closes: List[float], volumes: List[float]) -> List[float]:
+# IST offset in seconds: UTC+5:30 = 19800 s
+_IST_OFFSET_SECS = 19800
+
+
+def _ist_date(ts_ms: int) -> int:
+    """Return the IST calendar date as an integer YYYYMMDD for a UTC ms timestamp."""
+    ts_secs_ist = ts_ms / 1000 + _IST_OFFSET_SECS
+    # Days since epoch in IST
+    return int(ts_secs_ist // 86400)
+
+
+def _vwap(
+    highs: List[float],
+    lows: List[float],
+    closes: List[float],
+    volumes: List[float],
+    timestamps: Optional[List[int]] = None,
+) -> List[float]:
+    """
+    Session-anchored VWAP.
+
+    When *timestamps* (UTC milliseconds) are supplied the accumulator resets
+    at each new IST calendar date, which corresponds to the NSE session
+    boundary (09:15 IST open).  This is the correct behaviour for intraday
+    analysis: VWAP at candle i uses only candles from the same IST day.
+
+    When *timestamps* is None (legacy callers) the function falls back to
+    cumulative VWAP over the entire array — preserving backward compatibility.
+
+    No look-ahead: candle i only uses data up to and including candle i.
+    """
     result = []
-    cum_tp_vol = cum_vol = 0
+    cum_tp_vol = cum_vol = 0.0
+    prev_day: Optional[int] = None
+
     for i in range(len(closes)):
+        # Session reset when the IST date changes
+        if timestamps is not None:
+            day = _ist_date(timestamps[i])
+            if prev_day is not None and day != prev_day:
+                cum_tp_vol = 0.0
+                cum_vol    = 0.0
+            prev_day = day
+
         tp = (highs[i] + lows[i] + closes[i]) / 3
-        cum_tp_vol += tp * volumes[i]
-        cum_vol += volumes[i]
+        vol = volumes[i] if volumes[i] else 0.0
+        cum_tp_vol += tp * vol
+        cum_vol    += vol
         result.append(round(cum_tp_vol / cum_vol, 2) if cum_vol else closes[i])
+
     return result
 
 
@@ -458,7 +500,10 @@ def compute_technical_analysis(candles: List[Dict]) -> Dict[str, Any]:
     ema50     = _ema(closes, 50)
     ema200    = _ema(closes, 200)
     sma20     = _sma(closes, 20)
-    vwap_vals = _vwap(highs, lows, closes, volumes)
+    timestamps = [c.get('t') for c in candles]
+    # Pass timestamps only when all candles carry a 't' field
+    ts_for_vwap = timestamps if all(t is not None for t in timestamps) else None
+    vwap_vals = _vwap(highs, lows, closes, volumes, timestamps=ts_for_vwap)
 
     # ── New indicators (Section 3a)
     st_data   = _supertrend(highs, lows, closes)

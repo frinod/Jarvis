@@ -51,12 +51,12 @@ class JarvisOrchestrator:
     # ─── Live Data Context ────────────────────────────────────────────
 
     async def _get_live_context(self, user_input: str, selected_stock: str = None) -> str:
-        """Fetch live data with a hard 8s timeout — never block the LLM."""
+        """Fetch live data with a hard 20s timeout (Kiro may need up to 15s)."""
         import asyncio
         try:
             return await asyncio.wait_for(
                 self._get_live_context_inner(user_input, selected_stock),
-                timeout=8.0
+                timeout=20.0
             )
         except asyncio.TimeoutError:
             print(f"[JARVIS] Live context timeout for: {user_input[:50]}")
@@ -68,6 +68,19 @@ class JarvisOrchestrator:
     async def _get_live_context_inner(self, user_input: str, selected_stock: str = None) -> str:
         """Fetch live data and return as a context string to inject into system prompt."""
         lower = user_input.lower()
+
+        # ── Intent pre-classification (fast, no LLM) ──────────────────
+        # Use jarvis_intent classifier to detect market queries early.
+        # This avoids running all keyword checks below for general questions.
+        try:
+            from app.api.jarvis_intent import classify_intent
+            intent_result = classify_intent(user_input)
+            # For pure general AI queries with no symbols, skip all market fetches
+            if intent_result.intent == "GENERAL_AI" and not intent_result.symbols:
+                # Still allow weather/gold/web-search fallbacks below
+                pass
+        except Exception:
+            intent_result = None
 
         # ── Auto-trade / autotest commands ────────────────────────────
         _auto_start_kw = [
@@ -149,6 +162,11 @@ class JarvisOrchestrator:
         if any(w in lower for w in ['market news', 'latest news', 'stock news', 'nifty news',
                                      'market update', 'what happened', 'news today', 'breaking']):
             return await self._fetch_market_news_context()
+        # Kiro — deep reasoning, coding, logic, explanations, comparisons
+        if self._needs_kiro(user_input):
+            kiro_ctx = await self._ask_kiro_context(user_input)
+            if kiro_ctx:
+                return kiro_ctx
         if self._needs_web_search(user_input):
             return await self._do_web_search(user_input)
         return ""
@@ -703,18 +721,133 @@ class JarvisOrchestrator:
             print(f"[JARVIS] News context error: {e}")
             return await self._do_web_search("Indian stock market news today NSE BSE")
 
+    # ─── Kiro Integration ─────────────────────────────────────────────
+
+    # Question starters that signal deep reasoning / explanation needed
+    _KIRO_QUESTION_STARTERS = [
+        "why ", "why is ", "why does ", "why do ", "why did ", "why would ", "why should ",
+        "how does ", "how do ", "how did ", "how would ", "how should ", "how can ",
+        "explain ", "explain how", "explain why", "explain what", "explain the",
+        "what is the difference", "what's the difference", "difference between",
+        "compare ", "comparison between", "pros and cons", "advantages of", "disadvantages of",
+        "best way to", "best approach", "best practice", "best strategy",
+        "should i ", "should we ", "is it better", "which is better", "which is best",
+        "what is the best", "what's the best", "what would you recommend",
+        "help me understand", "can you explain", "can you describe", "walk me through",
+        "what happens when", "what happens if", "what would happen",
+        "tell me about", "give me an overview", "give me a summary",
+        "what are the", "list the", "what factors", "what causes",
+        "is there a way", "is it possible", "how is it possible",
+    ]
+
+    # Domain keywords that signal coding / architecture / technical reasoning
+    _KIRO_DOMAIN_KEYWORDS = [
+        # Coding
+        "code", "coding", "function", "class", "method", "variable", "algorithm",
+        "implement", "implementation", "refactor", "debug", "bug", "error", "exception",
+        "typescript", "javascript", "python", "react", "nextjs", "fastapi", "websocket",
+        "api", "endpoint", "component", "hook", "state", "store", "zustand",
+        "async", "await", "promise", "callback", "event", "listener",
+        # Architecture
+        "architecture", "design pattern", "design system", "system design",
+        "microservice", "monolith", "database", "schema", "model", "orm",
+        "frontend", "backend", "fullstack", "infrastructure", "deployment",
+        "docker", "kubernetes", "ci/cd", "pipeline", "devops",
+        # JARVIS-specific
+        "intentrouter", "voicebar", "jarvisstore", "orchestrator", "llmrouter",
+        "kiro", "gemini", "groq", "llm", "prompt", "token", "embedding",
+        "sfx", "music", "audio", "speech", "voice",
+        # Logic / reasoning
+        "logic", "reasoning", "decision", "strategy", "optimize", "optimise",
+        "performance", "scalability", "reliability", "security", "vulnerability",
+        "tradeoff", "trade-off", "bottleneck", "latency", "throughput",
+        # General analytical
+        "analyze", "analyse", "review", "evaluate", "assess", "critique",
+        "improve", "improvement", "suggestion", "recommendation",
+        "plan", "roadmap", "steps", "approach", "methodology",
+    ]
+
+    # Short phrases that are pure conversational — never route to Kiro
+    _KIRO_SKIP_PHRASES = [
+        "how are you", "how's it going", "how do you do",
+        "how is nifty", "how is the market", "how is reliance",
+        "how is tcs", "how is hdfc", "how is infosys",
+        "how is sensex", "how is banknifty",
+        "should i buy", "should i sell", "should i hold",  # stock decisions handled by TA
+    ]
+
+    def _needs_kiro(self, text: str) -> bool:
+        """Return True if the question needs deep reasoning / coding help from Kiro."""
+        lower = text.lower().strip()
+
+        # Never route pure stock/market/portfolio questions to Kiro
+        stock_skip = [
+            'nifty', 'sensex', 'banknifty', 'reliance', 'tcs', 'hdfc', 'infosys',
+            'wipro', 'bajaj', 'icici', 'sbi', 'kotak', 'axis', 'hul', 'itc',
+            'stock', 'share', 'market', 'portfolio', 'trade', 'trading',
+            'buy', 'sell', 'hold', 'signal', 'rsi', 'macd', 'chart',
+            'weather', 'gold', 'temperature', 'rain', 'news',
+            'who is', 'who was', 'prime minister', 'president', 'capital of',
+        ]
+        if any(k in lower for k in stock_skip):
+            return False
+
+        # Skip pure conversational phrases
+        if any(lower.startswith(p) or p in lower for p in self._KIRO_SKIP_PHRASES):
+            return False
+
+        # Match question starters that signal reasoning
+        has_reasoning_starter = any(lower.startswith(s) or lower.startswith("jarvis " + s) for s in self._KIRO_QUESTION_STARTERS)
+
+        # Match domain keywords
+        has_domain_keyword = any(k in lower for k in self._KIRO_DOMAIN_KEYWORDS)
+
+        return has_reasoning_starter or has_domain_keyword
+
+    async def _ask_kiro_context(self, user_input: str) -> str:
+        """Ask Kiro for reasoning/coding context and return it as an LLM feed."""
+        try:
+            from app.tools.kiro_tool import ask_kiro
+            print(f"[JARVIS] Routing to Kiro: {user_input[:60]}")
+            result = await ask_kiro(user_input, agent="jarvis")
+            if result["success"] and result["response"]:
+                return f"KIRO INTELLIGENCE:\n{result['response']}"
+            if result["error"]:
+                print(f"[JARVIS] Kiro error: {result['error']}")
+        except Exception as e:
+            print(f"[JARVIS] Kiro context error: {e}")
+        return ""
+
     # ─── Web Search ───────────────────────────────────────────────────
 
     def _needs_web_search(self, text: str) -> bool:
-        # Only trigger web search for clearly factual/current-events questions
-        # NOT for stock questions, portfolio questions, or general chat
+        """Trigger web search for factual/current-events questions on any topic."""
         keywords = [
-            "who is ", "who was ", "who are ", "where is ",
-            "when did ", "prime minister", "chief minister",
-            "cm of ", "governor of", "minister of",
-            "ceo of ", "founder of ", "chairman of ",
-            "population of", "capital of",
-            "weather in", "gold price", "gold rate",
+            # People & orgs
+            "who is ", "who was ", "who are ", "who invented ", "who created ", "who founded ",
+            "who won ", "who plays ", "who wrote ", "who directed ", "who sang ",
+            "ceo of ", "founder of ", "chairman of ", "president of ", "prime minister",
+            "chief minister", "cm of ", "governor of ", "minister of ",
+            # Places & facts
+            "where is ", "where was ", "capital of ", "population of ", "currency of ",
+            "language of ", "flag of ", "area of ", "size of ",
+            # Events & time
+            "when did ", "when was ", "when is ", "what year ", "what happened ",
+            "latest news", "recent news", "current news", "breaking news",
+            "what is the latest", "what happened to ",
+            # Science & facts
+            "what is the speed", "what is the distance", "how far is ", "how big is ",
+            "how tall is ", "how old is ", "how many ", "how much does ",
+            "what causes ", "why does the ", "what is the formula",
+            # Sports
+            "ipl ", "cricket ", "football ", "fifa ", "world cup ", "olympics ",
+            "score of ", "match result", "tournament ",
+            # Entertainment
+            "movie ", "film ", "actor ", "actress ", "singer ", "album ",
+            "box office", "release date", "cast of ",
+            # Live prices
+            "weather in", "gold price", "gold rate", "bitcoin price", "crypto price",
+            "petrol price", "diesel price", "dollar rate", "exchange rate",
         ]
         lower = text.lower()
         return any(k in lower for k in keywords)
@@ -925,20 +1058,31 @@ class JarvisOrchestrator:
                 summary = '\n'.join(lines[:4])
                 return f"{summary}\n\nNote: For deeper AI analysis, please configure an LLM API key in .env, Sir."
 
-        # Web search as last resort
+        # Kiro fallback — deep reasoning without LLM
+        if self._needs_kiro(user_input):
+            kiro = await self._ask_kiro_context(user_input)
+            if kiro:
+                answer = kiro.replace("KIRO INTELLIGENCE:\n", "").strip()
+                return answer if answer else None
+
+        # Web search as last resort — format as proper JARVIS answer
         web = await self._do_web_search(user_input)
         if web:
-            lines = [l.strip()[2:].split(': ', 1) for l in web.split('\n') if l.strip().startswith('- ')]
-            snippets = [p[1] if len(p) > 1 else p[0] for p in lines]
+            lines = [l.strip() for l in web.split('\n') if l.strip().startswith('- ')]
+            snippets = []
+            for l in lines:
+                parts = l[2:].split(': ', 1)
+                snippets.append(parts[1] if len(parts) > 1 else parts[0])
             best = max(snippets, key=len, default='')
             if best and len(best) > 30:
-                sentences = best.split('. ')
-                return '. '.join(sentences[:3]) + ('.' if len(sentences) > 3 else '')
+                sentences = [s.strip() for s in best.split('. ') if s.strip()]
+                answer = '. '.join(sentences[:3])
+                if not answer.endswith('.'): answer += '.'
+                return f"{answer}, Sir."
 
-        # Conversational fallback — never say "I was unable"
+        # Final fallback — LLM not configured
         return (
-            f"I understand you said: '{user_input}'. "
-            "For full conversational AI capabilities, please add a GEMINI_API_KEY or GROQ_API_KEY "
-            "to your .env file, Sir. Both are free. "
-            "I can still help with stock analysis, weather, news, and market data right now."
+            "I'm currently running without an LLM key, Sir. "
+            "Please add a GEMINI_API_KEY or GROQ_API_KEY to the .env file for full conversational AI. "
+            "Both are free. I can still help with stock analysis, weather, news, and market data."
         )
