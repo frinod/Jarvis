@@ -107,11 +107,12 @@ function VoiceCommandPanel() {
 
 // ── Provider labels ───────────────────────────────────────────
 const PROVIDER_LABELS: Record<string, { label: string; color: string }> = {
-  gemini:   { label: 'Gemini',   color: '#00D9FF' },
-  groq:     { label: 'Groq',     color: '#7B5EA7' },
-  deepseek: { label: 'DeepSeek', color: '#00F5FF' },
-  openai:   { label: 'OpenAI',   color: '#00FF9C' },
-  ollama:   { label: 'Ollama',   color: '#FFB347' },
+  openrouter: { label: 'OpenRouter', color: '#FF6B6B' },
+  gemini:     { label: 'Gemini',     color: '#00D9FF' },
+  groq:       { label: 'Groq',       color: '#7B5EA7' },
+  deepseek:   { label: 'DeepSeek',   color: '#00F5FF' },
+  openai:     { label: 'OpenAI',     color: '#00FF9C' },
+  ollama:     { label: 'Ollama',     color: '#FFB347' },
 }
 
 interface TradeProposal {

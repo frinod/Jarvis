@@ -100,21 +100,25 @@ async def startup():
 
     connected = False
 
-    # Priority 1: Gemini (free)
-    gemini_key = (settings.gemini_api_key or '').strip()
-    if gemini_key.startswith('AIza'):
-        from app.core.llm import GeminiProvider
-        provider = GeminiProvider(gemini_key, settings.gemini_model)
-        orchestrator.llm.register("gemini", provider, default=True)
-        gateway.register("gemini", provider, priority=10, default=True)
-        print(f"[JARVIS] + Google Gemini connected (model: {settings.gemini_model})")
+    from app.core.config import _is_valid_key
+
+    # Priority 1: OpenRouter (free tier, OpenAI-compatible)
+    openrouter_key = (settings.openrouter_api_key or '').strip()
+    if _is_valid_key(openrouter_key, 'sk-or-'):
+        from app.core.llm import OpenAICompatibleProvider
+        or_model = getattr(settings, 'openrouter_model', 'qwen/qwen3.8-27b:free')
+        or_base  = getattr(settings, 'openrouter_base_url', 'https://openrouter.ai/api/v1')
+        provider = OpenAICompatibleProvider(openrouter_key, or_model, or_base)
+        orchestrator.llm.register("openrouter", provider, default=True)
+        gateway.register("openrouter", provider, priority=10, default=True)
+        print(f"[JARVIS] + OpenRouter connected (model: {or_model})")
         connected = True
-    elif gemini_key:
-        print(f"[JARVIS] ! Gemini key looks invalid (should start with AIza). Skipping.")
+    elif openrouter_key:
+        print(f"[JARVIS] ! OpenRouter key invalid (must start with sk-or-). Status: INVALID_CONFIGURATION")
 
     # Priority 2: Groq (free, fast)
     groq_key = (settings.groq_api_key or '').strip()
-    if groq_key.startswith('gsk_'):
+    if _is_valid_key(groq_key, 'gsk_'):
         from app.core.llm import OpenAICompatibleProvider
         provider = OpenAICompatibleProvider(groq_key, settings.groq_model, "https://api.groq.com/openai/v1")
         orchestrator.llm.register("groq", provider, default=not connected)
@@ -122,36 +126,40 @@ async def startup():
         print(f"[JARVIS] + Groq connected (model: {settings.groq_model})")
         connected = True
     elif groq_key:
-        print(f"[JARVIS] ! Groq key looks invalid (should start with gsk_). Skipping.")
+        print(f"[JARVIS] ! Groq key invalid (must start with gsk_). Status: INVALID_CONFIGURATION")
 
-    # Priority 3: DeepSeek
+    # Priority 3: Gemini
+    # NOTE: placeholder 'AIzaSy_PASTE_YOUR_KEY_HERE' starts with 'AIza' but is NOT valid.
+    # _is_valid_key() rejects it because it contains 'PASTE'.
+    gemini_key = (settings.gemini_api_key or '').strip()
+    if _is_valid_key(gemini_key, 'AIza'):
+        from app.core.llm import GeminiProvider
+        provider = GeminiProvider(gemini_key, settings.gemini_model)
+        orchestrator.llm.register("gemini", provider, default=not connected)
+        gateway.register("gemini", provider, priority=30, default=not connected)
+        print(f"[JARVIS] + Google Gemini connected (model: {settings.gemini_model})")
+        connected = True
+    elif gemini_key:
+        print(f"[JARVIS] ! Gemini key NOT_CONFIGURED (placeholder or invalid). Skipping.")
+
+    # Priority 4: DeepSeek
     deepseek_key = (settings.deepseek_api_key or '').strip()
-    if deepseek_key:
+    if _is_valid_key(deepseek_key):
         from app.core.llm import OpenAICompatibleProvider
         provider = OpenAICompatibleProvider(deepseek_key, settings.deepseek_model, "https://api.deepseek.com/v1")
         orchestrator.llm.register("deepseek", provider, default=not connected)
-        gateway.register("deepseek", provider, priority=30, default=not connected)
-        print(f"[FRINO] + DeepSeek connected (model: {settings.deepseek_model})")
+        gateway.register("deepseek", provider, priority=40, default=not connected)
+        print(f"[JARVIS] + DeepSeek connected (model: {settings.deepseek_model})")
         connected = True
 
-    # Priority 4: OpenAI
+    # Priority 5: OpenAI
     openai_key = (settings.openai_api_key or '').strip()
-    if openai_key:
+    if _is_valid_key(openai_key):
         from app.core.llm import OpenAICompatibleProvider
         provider = OpenAICompatibleProvider(openai_key, settings.openai_model, "https://api.openai.com/v1")
         orchestrator.llm.register("openai", provider, default=not connected)
-        gateway.register("openai", provider, priority=40, default=not connected)
-        print(f"[FRINO] + OpenAI connected (model: {settings.openai_model})")
-        connected = True
-
-    # Priority 5: OpenRouter
-    openrouter_key = (settings.openrouter_api_key or '').strip()
-    if openrouter_key:
-        from app.core.llm import OpenAICompatibleProvider
-        provider = OpenAICompatibleProvider(openrouter_key, "meta-llama/llama-3.1-8b-instruct:free", "https://openrouter.ai/api/v1")
-        orchestrator.llm.register("openrouter", provider, default=not connected)
-        gateway.register("openrouter", provider, priority=50, default=not connected)
-        print("[FRINO] + OpenRouter connected")
+        gateway.register("openai", provider, priority=50, default=not connected)
+        print(f"[JARVIS] + OpenAI connected (model: {settings.openai_model})")
         connected = True
 
     # Priority 6: Ollama (local)
@@ -164,26 +172,27 @@ async def startup():
                 provider = OllamaProvider(settings.local_model_path, settings.ollama_model)
                 orchestrator.llm.register("ollama", provider, default=True)
                 gateway.register("ollama", provider, priority=60, default=True)
-                print(f"[FRINO] + Ollama connected (model: {settings.ollama_model})")
+                print(f"[JARVIS] + Ollama connected (model: {settings.ollama_model})")
                 connected = True
         except Exception:
             pass
 
     if not connected:
-        print("[FRINO] ===================================================")
-        print("[FRINO] WARNING: No LLM provider configured! Running in fallback mode.")
-        print("[FRINO]   To enable full AI (like ChatGPT), add an API key to .env:")
-        print("[FRINO]   - GEMINI_API_KEY  (free: https://aistudio.google.com/app/apikey)")
-        print("[FRINO]   - GROQ_API_KEY    (free: https://console.groq.com/keys)")
-        print("[FRINO]   - DEEPSEEK_API_KEY (cheap: https://platform.deepseek.com)")
-        print("[FRINO] ===================================================")
+        print("[JARVIS] ===================================================")
+        print("[JARVIS] WARNING: No LLM provider configured. Status: LLM_UNAVAILABLE")
+        print("[JARVIS]   JARVIS will use keyword fallback only — NOT an LLM.")
+        print("[JARVIS]   Add a key to backend/.env to enable real AI:")
+        print("[JARVIS]   - OPENROUTER_API_KEY  (free: https://openrouter.ai/settings/keys)")
+        print("[JARVIS]   - GROQ_API_KEY        (free: https://console.groq.com/keys)")
+        print("[JARVIS]   - GEMINI_API_KEY      (free: https://aistudio.google.com/app/apikey)")
+        print("[JARVIS] ===================================================")
 
     # Wire AIRuntime — attaches to orchestrator so all live requests flow through it
     if connected:
         try:
             from app.ai import AIRuntime
             orchestrator.ai_runtime = AIRuntime(gateway=gateway)
-            print("[JARVIS] + AIRuntime wired — all requests now route through Brain → LLMGateway")
+            print("[JARVIS] + AIRuntime initialized (gateway wired). NOTE: normal chat routes via orchestrator._call_runtime() -> gateway.complete() directly. Brain/ExecutionEngine/agents are initialized but not yet active in the normal chat path.")
         except Exception as e:
             print(f"[JARVIS] AIRuntime init failed (falling back to LLMRouter): {e}")
 

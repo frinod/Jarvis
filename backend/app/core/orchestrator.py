@@ -895,6 +895,13 @@ class JarvisOrchestrator:
     # ─── Smart Fallback (No LLM configured) ──────────────────────────
 
     async def _smart_fallback(self, user_input: str) -> str:
+        """
+        Keyword-based fallback used ONLY when no LLM provider is configured.
+        This is NOT an LLM response. Responses are prefixed with a status
+        indicator so callers and logs can distinguish fallback from real AI.
+        """
+        # Internal marker stripped before returning to user, but logged.
+        print(f"[JARVIS] FALLBACK_MODE (no LLM): {user_input[:60]}")
         lower = user_input.lower().strip()
 
         # Greetings
