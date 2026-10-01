@@ -17,3 +17,4 @@ smartapi-python
 pyotp
 xgboost==1.6.2
 scikit-learn==1.0.2
+tzdata>=2024.1

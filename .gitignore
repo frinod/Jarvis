@@ -1,4 +1,4 @@
-# ── Secrets ──────────────────────────────────────────────
+# -- Secrets --------------------------------------------------
 .env
 *.pem
 *.key
@@ -6,7 +6,7 @@
 *.pfx
 secrets/
 
-# ── Python ───────────────────────────────────────────────
+# -- Python ---------------------------------------------------
 __pycache__/
 *.py[cod]
 *$py.class
@@ -26,14 +26,14 @@ lib/
 lib64/
 MANIFEST
 
-# ── Virtual environments ──────────────────────────────────
+# -- Virtual environments -------------------------------------
 venv/
 .venv/
 env/
 ENV/
 .env.bak
 
-# ── Testing ───────────────────────────────────────────────
+# -- Testing --------------------------------------------------
 .pytest_cache/
 .coverage
 .coverage.*
@@ -45,18 +45,18 @@ coverage.xml
 nosetests.xml
 test-results/
 
-# ── Logs ─────────────────────────────────────────────────
+# -- Logs -----------------------------------------------------
 *.log
 logs/
 backend/logs/
 server.log
 server_test.log
+dev_server.log
 
-# ── Node / Frontend ───────────────────────────────────────
+# -- Node / Frontend ------------------------------------------
 node_modules/
 .next/
 .nuxt/
-dist/
 .cache/
 .parcel-cache/
 npm-debug.log*
@@ -64,7 +64,7 @@ yarn-debug.log*
 yarn-error.log*
 .pnpm-debug.log*
 
-# ── IDEs ─────────────────────────────────────────────────
+# -- IDEs -----------------------------------------------------
 .vscode/
 .idea/
 *.swp
@@ -73,16 +73,16 @@ yarn-error.log*
 .DS_Store
 Thumbs.db
 
-# ── Jupyter ───────────────────────────────────────────────
+# -- Jupyter --------------------------------------------------
 .ipynb_checkpoints/
 *.ipynb
 
-# ── Database ─────────────────────────────────────────────
+# -- Database -------------------------------------------------
 *.db
 *.sqlite
 *.sqlite3
 
-# ── Temporary files ───────────────────────────────────────
+# -- Temporary files ------------------------------------------
 tmp/
 temp/
 *.tmp
@@ -90,21 +90,38 @@ temp/
 *.orig
 tmp_orch.txt
 
-# ── ML Models (large binaries — store separately) ────────
+# -- ML Models (large binaries — store separately) ------------
 backend/models/*.pkl
 backend/models/*.meta
 
-# ── Build artifacts ───────────────────────────────────────
+# -- Generated / cache files ----------------------------------
+instruments_cache.json
+backend/autotest_patches.json
+backend/patch_mi_result.txt
+backend/jarvis_paper_trading.json
+
+# -- Dev/debug scripts (not production code) ------------------
+backend/diagnose.py
+backend/forecaster_test.py
+backend/live_validate.py
+backend/patch_mi.py
+backend/track_trades.py
+
+# -- Old backup snapshots -------------------------------------
+backup_v1restore/
+workspace/
+
+# -- Build artifacts ------------------------------------------
 *.pyc
 *.pyo
 *.pyd
 *.whl
 
-# ── TypeScript build ──────────────────────────────────────
+# -- TypeScript build -----------------------------------------
 *.tsbuildinfo
 tsconfig.tsbuildinfo
 
-# ── OS ───────────────────────────────────────────────────
+# -- OS -------------------------------------------------------
 .DS_Store
 .DS_Store?
 ._*
