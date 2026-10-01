@@ -8,15 +8,142 @@ Wraps the existing data_quality.py pipeline and adds:
   - Timezone normalisation (all timestamps stored as UTC ms)
   - Minimum candle count enforcement
   - Volume anomaly detection
+  - Candle freshness check (market-session-aware)
 """
 from __future__ import annotations
 
+import datetime
 import logging
-from typing import List, Tuple, Dict, Any
+import time
+from typing import List, Tuple, Dict, Any, Optional
 
 from app.market_data.providers.base import Candle, Quote
 
 log = logging.getLogger(__name__)
+
+# ── Freshness constants ───────────────────────────────────────
+# Maximum acceptable candle age (seconds) during an active NSE session.
+# Outside market hours this threshold is NOT enforced — historical data
+# is valid for analysis even if the last candle is hours old.
+INTRADAY_FRESHNESS_THRESHOLD_SECS: int = 30 * 60   # 30 minutes
+
+# NSE regular session in IST minutes-since-midnight
+_NSE_OPEN_MIN  = 9 * 60 + 15   # 09:15
+_NSE_CLOSE_MIN = 15 * 60 + 30  # 15:30
+
+
+def _ist_minutes_now() -> int:
+    """Return current IST time as minutes since midnight."""
+    utc_now = datetime.datetime.utcnow()
+    ist_now = utc_now + datetime.timedelta(hours=5, minutes=30)
+    return ist_now.hour * 60 + ist_now.minute
+
+
+def _ist_weekday_now() -> int:
+    """Return current IST weekday (0=Mon … 6=Sun)."""
+    utc_now = datetime.datetime.utcnow()
+    ist_now = utc_now + datetime.timedelta(hours=5, minutes=30)
+    return ist_now.weekday()
+
+
+def nse_market_open() -> bool:
+    """Return True if NSE regular session is currently active."""
+    if _ist_weekday_now() >= 5:          # Saturday / Sunday
+        return False
+    m = _ist_minutes_now()
+    return _NSE_OPEN_MIN <= m <= _NSE_CLOSE_MIN
+
+
+class FreshnessResult:
+    """Result of a candle freshness check."""
+
+    def __init__(
+        self,
+        status: str,          # LIVE | STALE | OLD | MARKET_CLOSED
+        age_seconds: float,
+        latest_candle_ts_ms: int,
+        threshold_secs: int,
+        market_open: bool,
+    ):
+        self.status              = status
+        self.age_seconds         = age_seconds
+        self.age_minutes         = age_seconds / 60
+        self.latest_candle_ts_ms = latest_candle_ts_ms
+        self.threshold_secs      = threshold_secs
+        self.market_open         = market_open
+
+    @property
+    def is_fresh(self) -> bool:
+        """True when data is acceptable for live intraday use."""
+        return self.status in ("LIVE", "MARKET_CLOSED")
+
+    def __repr__(self) -> str:
+        return (
+            f"FreshnessResult(status={self.status}, "
+            f"age={self.age_minutes:.1f}min, market_open={self.market_open})"
+        )
+
+
+def check_candle_freshness(
+    candles: List[Any],   # list of Candle objects or legacy dicts
+    threshold_secs: int = INTRADAY_FRESHNESS_THRESHOLD_SECS,
+) -> FreshnessResult:
+    """
+    Measure the age of the latest candle against the current wall-clock time.
+
+    Rules:
+      - During NSE market hours: enforce threshold_secs.
+        If latest candle is older than threshold → STALE.
+      - Outside market hours: data is always MARKET_CLOSED (valid for analysis).
+      - Candle age is measured from the candle's own timestamp, not from any
+        provider-reported metadata.  This works regardless of which provider
+        served the data.
+
+    Args:
+        candles:        list of Candle objects or legacy dicts with key 't' (Unix ms UTC)
+        threshold_secs: max acceptable age during market hours (default 30 min)
+
+    Returns:
+        FreshnessResult
+    """
+    if not candles:
+        return FreshnessResult(
+            status="OLD", age_seconds=float("inf"),
+            latest_candle_ts_ms=0, threshold_secs=threshold_secs,
+            market_open=nse_market_open(),
+        )
+
+    # Support both Candle objects and legacy dicts
+    last = candles[-1]
+    ts_ms: int = last.t if hasattr(last, "t") else int(last.get("t", 0))
+
+    if ts_ms <= 0:
+        return FreshnessResult(
+            status="OLD", age_seconds=float("inf"),
+            latest_candle_ts_ms=0, threshold_secs=threshold_secs,
+            market_open=nse_market_open(),
+        )
+
+    age_secs   = time.time() - ts_ms / 1000
+    market_now = nse_market_open()
+
+    if not market_now:
+        # Outside market hours — historical data is valid
+        status = "MARKET_CLOSED"
+    elif age_secs <= threshold_secs:
+        status = "LIVE"
+    elif age_secs <= threshold_secs * 2:
+        status = "STALE"
+    else:
+        status = "OLD"
+
+    return FreshnessResult(
+        status=status,
+        age_seconds=age_secs,
+        latest_candle_ts_ms=ts_ms,
+        threshold_secs=threshold_secs,
+        market_open=market_now,
+    )
 
 
 def validate_candles(

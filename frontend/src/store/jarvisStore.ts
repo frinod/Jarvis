@@ -1,5 +1,59 @@
 import { create } from 'zustand'
 
+// ── JARVIS Phase State Machine (Phase B) ──────────────────────
+// 8-phase machine adapted from reference project.
+// Coexists with existing `status` field — existing UI consumers unchanged.
+export type JarvisPhase =
+  | 'offline'    // audio context not yet unlocked
+  | 'boot'       // startup sequence playing
+  | 'dormant'    // powered down, listening for wake word only
+  | 'waking'     // wake word detected, spin-up animation
+  | 'listening'  // VAD active, capturing speech
+  | 'thinking'   // LLM / tool calls in progress
+  | 'tooling'    // a market capability tool is executing
+  | 'speaking'   // TTS playing response
+
+/** Per-phase accent colours — shared by HUD and voice bar */
+export const JARVIS_PHASE_COLOR: Record<JarvisPhase, string> = {
+  offline:   '#0d4a4a',
+  boot:      '#17b3b3',
+  dormant:   '#12908f',
+  waking:    '#5cf2ef',
+  listening: '#00FF99',
+  thinking:  '#009DFF',
+  tooling:   '#FFC857',
+  speaking:  '#33F2FF',
+}
+
+// ── Market Session State (Phase C) ────────────────────────────
+// Frontend UX state only — backend validator.py is authoritative.
+export type MarketSessionStatus =
+  | 'open'        // NSE regular session 09:15–15:30 IST
+  | 'pre_market'  // 09:00–09:15 IST
+  | 'post_market' // 15:30–16:00 IST
+  | 'closed'      // outside all sessions
+  | 'holiday'     // NSE trading holiday
+  | 'weekend'     // Saturday / Sunday
+  | 'unknown'     // not yet determined
+
+export interface MarketSessionState {
+  status: MarketSessionStatus
+  label: string           // human-readable: "Market Open", "Market Closed", etc.
+  opensInMs: number | null  // ms until next open (null if open or unknown)
+  closesInMs: number | null // ms until close (null if closed or unknown)
+  lastChecked: number     // Date.now() when last computed
+}
+
+// ── Voice Intent (Phase C) ────────────────────────────────────
+export interface VoiceIntent {
+  raw: string             // original transcript
+  intent: string          // classified intent e.g. STOCK_ANALYSIS
+  symbols: string[]       // extracted stock symbols
+  params: Record<string, string>  // additional params
+  confidence: number      // 0-1 classifier confidence
+  toolPlan: string[]      // ordered list of tools to call
+}
+
 export interface Message {
   id: string
   role: 'user' | 'assistant'
@@ -462,7 +516,14 @@ export interface AnalysisSnapshot {
 }
 
 interface JarvisState {
+  // ── Existing status field — preserved for all existing UI consumers ──
   status: 'idle' | 'thinking' | 'speaking' | 'listening' | 'executing'
+  // ── New JARVIS phase machine (Phase B) — coexists with status ────────
+  phase: JarvisPhase
+  marketSession: MarketSessionState
+  voiceIntent: VoiceIntent | null
+  activeToolName: string | null   // name of currently executing capability tool
+  lastJarvisUtterance: string     // for echo detection in VAD
   messages: Message[]
   tasks: Task[]
   agents: Agent[]
@@ -525,8 +586,15 @@ interface JarvisState {
   // Position marker — shown on stock chart when navigating from a position card
   positionMarker: { symbol: string; buyPrice: number; openedAt: number } | null
   setPositionMarker: (marker: { symbol: string; buyPrice: number; openedAt: number } | null) => void
+  // ── New JARVIS phase actions (Phase B) ──────────────────────
+  setPhase: (phase: JarvisPhase) => void
+  setMarketSession: (session: MarketSessionState) => void
+  setVoiceIntent: (intent: VoiceIntent | null) => void
+  setActiveToolName: (name: string | null) => void
+  setLastJarvisUtterance: (text: string) => void
+  // ── Existing actions — unchanged ─────────────────────────────
   // Actions
-  sendMessage: (content: string) => Promise<void>
+  sendMessage: (content: string, meta?: { toolContext?: string; disclaimers?: string[]; intent?: string; symbols?: string[] }) => Promise<void>
   addSystemMessage: (content: string) => void
   setStatus: (status: JarvisState['status']) => void
   addTask: (task: Task) => void
@@ -583,59 +651,183 @@ export interface QuickTradePayload {
 export const API_URL = process.env.NEXT_PUBLIC_API_URL || 'http://127.0.0.1:8000'
 export const WS_URL = API_URL.replace('http', 'ws')
 
-// ── Browser TTS helper ────────────────────────────────────────
-function speakText(text: string, onStart: () => void, onEnd: () => void) {
-  if (typeof window === 'undefined' || !window.speechSynthesis) { onEnd(); return }
+// ── Browser TTS — Chrome-proof implementation ────────────────
+// Chrome bugs we handle:
+//   1. Stops after ~200 chars silently → chunk into short sentences
+//   2. Freezes when tab loses focus → keepAlive ping every 2s
+//   3. Gets stuck in speaking=true but nothing plays → watchdog timeout
+//   4. onvoiceschanged fires before voices load → retry loop
 
-  const clean = text
+let _ttsActive = false
+let _ttsCancel = false
+
+export function cancelSpeech() {
+  _ttsCancel = true
+  _ttsActive = false
+  if (typeof window !== 'undefined') window.speechSynthesis?.cancel()
+}
+
+function cleanText(text: string): string {
+  return text
     .replace(/```[\s\S]*?```/g, 'code block omitted')
-    .replace(/[*_`#>~|\[\]]/g, '')
-    .replace(/\n+/g, ' ')
+    .replace(/`[^`]+`/g, '')
+    .replace(/[*_#>~|\[\]]/g, '')
+    .replace(/https?:\/\/\S+/g, 'link')
+    .replace(/\n+/g, '. ')
+    .replace(/\.{2,}/g, '.')
+    .replace(/\s+/g, ' ')
     .trim()
-  const spoken = clean.length > 500 ? clean.slice(0, 497) + '...' : clean
-  if (!spoken) { onEnd(); return }
+}
 
-  // Signal speaking immediately — don't wait for onstart (fires late on Chrome)
-  onStart()
-
-  const doSpeak = (voices: SpeechSynthesisVoice[]) => {
-    const utt = new SpeechSynthesisUtterance(spoken)
-    utt.lang = 'en-IN'
-    utt.rate = 1.05
-    utt.pitch = 0.9
-    utt.volume = 1
-    const preferred =
-      voices.find(v => v.name.toLowerCase().includes('google uk english male')) ||
-      voices.find(v => v.name.toLowerCase().includes('david')) ||
-      voices.find(v => v.name.toLowerCase().includes('daniel')) ||
-      voices.find(v => v.lang === 'en-IN') ||
-      voices.find(v => v.lang.startsWith('en-'))
-    if (preferred) utt.voice = preferred
-    utt.onend = onEnd
-    utt.onerror = () => { onEnd() }
-    // Cancel any previous speech, then wait 80ms for Chrome to fully clear its queue
-    window.speechSynthesis.cancel()
-    setTimeout(() => {
-      // If cancelled externally during the delay, don't speak
-      if (!window.speechSynthesis) return
-      if (window.speechSynthesis.paused) window.speechSynthesis.resume()
-      window.speechSynthesis.speak(utt)
-    }, 80)
-  }
-
-  const voices = window.speechSynthesis.getVoices()
-  if (voices.length > 0) {
-    doSpeak(voices)
-  } else {
-    window.speechSynthesis.onvoiceschanged = () => {
-      window.speechSynthesis.onvoiceschanged = null
-      doSpeak(window.speechSynthesis.getVoices())
+function chunkText(text: string): string[] {
+  // Split on sentence endings, keep chunks under 150 chars
+  const raw = text.match(/[^.!?]+[.!?]*/g) || [text]
+  const out: string[] = []
+  let cur = ''
+  for (const s of raw) {
+    const t = s.trim()
+    if (!t) continue
+    if (cur && (cur + ' ' + t).length > 150) {
+      out.push(cur)
+      cur = t
+    } else {
+      cur = cur ? cur + ' ' + t : t
     }
   }
+  if (cur) out.push(cur)
+  return out.filter(s => s.length > 0)
+}
+
+function getVoice(voices: SpeechSynthesisVoice[]): SpeechSynthesisVoice | null {
+  return (
+    voices.find(v => /google uk english male/i.test(v.name)) ||
+    voices.find(v => /^david$/i.test(v.name)) ||
+    voices.find(v => /daniel/i.test(v.name)) ||
+    voices.find(v => v.lang === 'en-GB') ||
+    voices.find(v => v.lang === 'en-IN') ||
+    voices.find(v => v.lang.startsWith('en')) ||
+    null
+  )
+}
+
+function speakChunk(
+  text: string,
+  voice: SpeechSynthesisVoice | null,
+  onDone: (cancelled: boolean) => void
+) {
+  const ss = window.speechSynthesis
+  const utt = new SpeechSynthesisUtterance(text)
+  utt.lang   = 'en-GB'
+  utt.rate   = 1.0
+  utt.pitch  = 0.85
+  utt.volume = 1.0
+  if (voice) utt.voice = voice
+
+  let done = false
+  const finish = (cancelled: boolean) => {
+    if (done) return
+    done = true
+    clearInterval(ping)
+    clearTimeout(watchdog)
+    onDone(cancelled)
+  }
+
+  utt.onend   = () => finish(false)
+  utt.onerror = (e) => finish(e.error === 'interrupted' || e.error === 'canceled')
+
+  // Ping every 2s — prevents Chrome freeze when tab loses focus
+  const ping = setInterval(() => {
+    if (ss.paused) ss.resume()
+  }, 2000)
+
+  // Watchdog — if chunk takes >15s something is frozen, move on
+  const watchdog = setTimeout(() => finish(false), 15000)
+
+  ss.speak(utt)
+}
+
+function speakText(text: string, onStart: () => void, onEnd: (completed: boolean) => void) {
+  if (typeof window === 'undefined' || !window.speechSynthesis) { onEnd(false); return }
+
+  const clean = cleanText(text)
+  if (!clean) { onEnd(false); return }
+
+  const chunks = chunkText(clean)
+  if (!chunks.length) { onEnd(false); return }
+
+  _ttsCancel = false
+  _ttsActive = true
+  onStart()
+
+  const ss = window.speechSynthesis
+  ss.cancel() // clear any previous queue
+
+  const run = (voices: SpeechSynthesisVoice[]) => {
+    const voice = getVoice(voices)
+    let i = 0
+
+    const next = () => {
+      if (i >= chunks.length) {
+        _ttsActive = false
+        onEnd(true)  // completed naturally
+        return
+      }
+      if (_ttsCancel) {
+        _ttsActive = false
+        onEnd(false) // cancelled
+        return
+      }
+      // Small gap between chunks so Chrome doesn't merge them
+      setTimeout(() => {
+        if (_ttsCancel) { _ttsActive = false; onEnd(false); return }
+        speakChunk(chunks[i++], voice, (cancelled) => {
+          if (cancelled) { _ttsActive = false; onEnd(false); return }
+          next()
+        })
+      }, i === 1 ? 0 : 50) // no delay on first chunk, 50ms between rest
+    }
+
+    next()
+  }
+
+  // Chrome sometimes returns empty voices on first call — retry up to 10 times
+  let attempts = 0
+  const tryRun = () => {
+    const voices = ss.getVoices()
+    if (voices.length > 0) {
+      run(voices)
+    } else if (attempts++ < 10) {
+      ss.onvoiceschanged = () => { ss.onvoiceschanged = null; run(ss.getVoices()) }
+      // Also poll as fallback since onvoiceschanged is unreliable
+      setTimeout(() => {
+        if (_ttsActive && ss.getVoices().length > 0) {
+          ss.onvoiceschanged = null
+          run(ss.getVoices())
+        }
+      }, 300)
+    } else {
+      run([]) // give up waiting, speak with default voice
+    }
+  }
+
+  tryRun()
 }
 
 export const useJarvisStore = create<JarvisState>((set, get) => ({
+  // ── Existing fields — unchanged ───────────────────────────────
   status: 'idle',
+  // ── New JARVIS phase fields (Phase B) ────────────────────────
+  phase: 'offline' as JarvisPhase,
+  marketSession: {
+    status: 'unknown',
+    label: 'Checking market...',
+    opensInMs: null,
+    closesInMs: null,
+    lastChecked: 0,
+  } as MarketSessionState,
+  voiceIntent: null,
+  activeToolName: null,
+  lastJarvisUtterance: '',
   messages: [],
   tasks: [],
   agents: [],
@@ -703,6 +895,12 @@ export const useJarvisStore = create<JarvisState>((set, get) => ({
   },
 
   setStatus: (status) => set({ status }),
+  // ── New JARVIS phase actions ──────────────────────────────────
+  setPhase: (phase) => set({ phase }),
+  setMarketSession: (session) => set({ marketSession: session }),
+  setVoiceIntent: (intent) => set({ voiceIntent: intent }),
+  setActiveToolName: (name) => set({ activeToolName: name }),
+  setLastJarvisUtterance: (text) => set({ lastJarvisUtterance: text }),
   addTask: (task) => set((s) => ({ tasks: [...s.tasks, task] })),
   setActiveNav: (nav) => set({ activeNav: nav }),
   setVoiceActive: (active) => set({ voiceActive: active }),
@@ -1075,8 +1273,8 @@ export const useJarvisStore = create<JarvisState>((set, get) => ({
     set((s) => ({ messages: [...s.messages, msg] }))
   },
 
-  sendMessage: async (content: string) => {
-    // Cancel any ongoing TTS and hide the overlay immediately
+  sendMessage: async (content: string, meta?: { toolContext?: string; disclaimers?: string[]; intent?: string; symbols?: string[] }) => {
+    // Cancel any ongoing TTS immediately
     if (typeof window !== 'undefined') {
       if (window.speechSynthesis?.speaking || window.speechSynthesis?.pending) {
         window.speechSynthesis.cancel()
@@ -1090,6 +1288,17 @@ export const useJarvisStore = create<JarvisState>((set, get) => ({
     }
     set((s) => ({ messages: [...s.messages, userMsg], status: 'thinking' }))
     const selectedStock = get().selectedStock
+
+    // Build the payload — tool context goes as a separate field, NEVER in the message
+    const wsPayload: Record<string, unknown> = {
+      message: content,
+      user_id: 'default',
+      selected_stock: selectedStock,
+    }
+    if (meta?.toolContext) wsPayload.tool_context = meta.toolContext
+    if (meta?.disclaimers?.length) wsPayload.disclaimers = meta.disclaimers
+    if (meta?.intent) wsPayload.intent = meta.intent
+    if (meta?.symbols?.length) wsPayload.symbols = meta.symbols
 
     try {
       const ws = new WebSocket(`${WS_URL}/api/ws/chat`)
@@ -1118,7 +1327,7 @@ export const useJarvisStore = create<JarvisState>((set, get) => ({
           })
         }
 
-        ws.onopen = () => ws.send(JSON.stringify({ message: content, user_id: 'default', selected_stock: selectedStock }))
+        ws.onopen = () => ws.send(JSON.stringify(wsPayload))
         ws.onmessage = (event) => {
           const data = JSON.parse(event.data)
           if (data.type === 'token') {
@@ -1149,11 +1358,14 @@ export const useJarvisStore = create<JarvisState>((set, get) => ({
 
       if (fullResponse) {
         set({ status: 'speaking' })
-        // Show visual overlay — import lazily to avoid SSR issues
-        if (typeof window !== 'undefined') {
-          import('@/components/JarvisOverlay').then(m => m.showJarvisOverlay(fullResponse)).catch(() => {})
-        }
-        speakText(fullResponse, () => {}, () => set({ status: 'idle' }))
+        // DO NOT show popup for normal responses — response is in the Command Console
+        // Only show overlay for trade proposals or explicit system alerts
+        speakText(fullResponse, () => {
+          set({ phase: 'speaking' as JarvisPhase })
+        }, (completed) => {
+          set({ status: 'idle', ...(completed ? { phase: 'dormant' as JarvisPhase } : {}) })
+        })
+        get().setLastJarvisUtterance(fullResponse)
         get().fetchStatus()
         return
       }
@@ -1163,7 +1375,7 @@ export const useJarvisStore = create<JarvisState>((set, get) => ({
       const res = await fetch(`${API_URL}/api/chat`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ message: content, selected_stock: selectedStock }),
+        body: JSON.stringify({ message: content, selected_stock: selectedStock, tool_context: meta?.toolContext }),
       })
       const data = await res.json()
       const reply = data.response
@@ -1172,10 +1384,13 @@ export const useJarvisStore = create<JarvisState>((set, get) => ({
         status: 'idle',
       }))
       set({ status: 'speaking' })
-      if (typeof window !== 'undefined') {
-        import('@/components/JarvisOverlay').then(m => m.showJarvisOverlay(reply)).catch(() => {})
-      }
-      speakText(reply, () => {}, () => set({ status: 'idle' }))
+      // DO NOT show popup for normal responses
+      speakText(reply, () => {
+        set({ phase: 'speaking' as JarvisPhase })
+      }, (completed) => {
+        set({ status: 'idle', ...(completed ? { phase: 'dormant' as JarvisPhase } : {}) })
+      })
+      get().setLastJarvisUtterance(reply)
       get().fetchStatus()
     } catch {
       set((s) => ({

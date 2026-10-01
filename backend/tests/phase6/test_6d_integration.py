@@ -160,7 +160,11 @@ class TestTraderAgentMilestone:
     async def test_trader_produces_buy_signal(self):
         agent = TraderAgent()
         ctx   = _ctx(agent="trader")
-        ctx.metadata["signal_confidence"] = 0.85
+        from app.ai.prediction.forecasting import ForecastResult
+        ctx.metadata["_forecast"] = ForecastResult(
+            direction="UP", confidence=85.0,
+            prob_up=85.0, prob_down=8.0, prob_flat=7.0,
+        )
         result = await agent.execute(ctx)
         signal = result.metadata.get("trade_signal")
         assert signal is not None
@@ -170,7 +174,11 @@ class TestTraderAgentMilestone:
     async def test_trader_produces_sell_signal(self):
         agent = TraderAgent()
         ctx   = _ctx(agent="trader")
-        ctx.metadata["signal_confidence"] = 0.15
+        from app.ai.prediction.forecasting import ForecastResult
+        ctx.metadata["_forecast"] = ForecastResult(
+            direction="DOWN", confidence=68.0,
+            prob_up=12.0, prob_down=68.0, prob_flat=20.0,
+        )
         result = await agent.execute(ctx)
         signal = result.metadata["trade_signal"]
         assert signal.direction == SignalDirection.SELL

@@ -9,6 +9,7 @@ import os
 import json
 import time
 from typing import Dict, List, Any, Optional, Tuple
+import numpy as np
 
 RESULTS_DIR = os.path.join(os.path.dirname(__file__), "..", "..", "models", "wfv")
 
@@ -32,6 +33,16 @@ def record_prediction(
     timestamp: float,
     horizon_minutes: int = 30,
     source: str = "xgboost",
+    # Extended context — all optional for backward compatibility
+    direction: Optional[str] = None,
+    prob_up: Optional[float] = None,
+    prob_down: Optional[float] = None,
+    prob_flat: Optional[float] = None,
+    stop_loss: Optional[float] = None,
+    target: Optional[float] = None,
+    regime: Optional[str] = None,
+    wfv_accuracy: Optional[float] = None,
+    wfv_useful: Optional[bool] = None,
 ) -> str:
     """
     Store a prediction so it can be evaluated later.
@@ -47,13 +58,27 @@ def record_prediction(
         "price_at_signal": price_at_signal,
         "timestamp":       timestamp,
         "horizon_minutes": horizon_minutes,
+        "horizon_due_ts":  timestamp + horizon_minutes * 60,  # Unix ts when resolution is due
         "source":          source,
         "outcome":         None,   # filled in later
         "actual_return":   None,
         "correct":         None,
+        # Extended context
+        "direction":       direction,
+        "prob_up":         prob_up,
+        "prob_down":       prob_down,
+        "prob_flat":       prob_flat,
+        "stop_loss":       stop_loss,
+        "target":          target,
+        "regime":          regime,
+        "wfv_accuracy":    wfv_accuracy,
+        "wfv_useful":      wfv_useful,
     }
     path = _results_path(symbol)
     records = _load_records(path)
+    # Idempotent: skip if this pred_id already exists
+    if any(r["id"] == pred_id for r in records):
+        return pred_id
     records.append(record)
     # Keep last 500 predictions per symbol
     records = records[-500:]
@@ -65,34 +90,76 @@ def resolve_prediction(
     symbol: str,
     pred_id: str,
     actual_price: float,
+    actual_price_ts: Optional[float] = None,
 ) -> Optional[Dict]:
     """
     Resolve a stored prediction against the actual price.
     Call this after horizon_minutes have elapsed.
+
+    Safety rules:
+      - A prediction already resolved is NOT resolved again (idempotent).
+      - actual_price must be > 0; otherwise resolution is skipped.
+      - actual_price_ts (Unix seconds) must be >= horizon_due_ts when provided;
+        stale actual prices are rejected and the prediction stays pending.
     """
     path = _results_path(symbol)
     records = _load_records(path)
+    updated = False
     for r in records:
-        if r["id"] == pred_id and r["outcome"] is None:
-            entry = r["price_at_signal"]
-            if entry <= 0:
-                continue
-            ret = (actual_price - entry) / entry
-            r["actual_return"] = round(ret * 100, 3)
-            # Correct if direction matches
-            if r["signal"] == "BUY":
-                r["correct"] = ret > 0.001
-            elif r["signal"] == "SELL":
-                r["correct"] = ret < -0.001
-            else:  # HOLD
-                r["correct"] = abs(ret) < 0.005
-            r["outcome"] = "resolved"
-            break
-    _save_records(path, records)
+        if r["id"] != pred_id:
+            continue
+        if r["outcome"] is not None:
+            # Already resolved — idempotent, return existing record
+            return r
+        if actual_price <= 0:
+            # Missing price — leave pending
+            return r
+        # Freshness guard: reject if actual price timestamp is before the horizon
+        due_ts = r.get("horizon_due_ts")
+        if due_ts and actual_price_ts is not None and actual_price_ts < due_ts:
+            # Stale actual price — leave pending
+            return r
+        entry = r["price_at_signal"]
+        if entry <= 0:
+            return r
+        ret = (actual_price - entry) / entry
+        r["actual_return"] = round(ret * 100, 3)
+        r["actual_price"]  = actual_price
+        r["resolved_at"]   = time.time()
+        # Correct if direction matches
+        if r["signal"] == "BUY":
+            r["correct"] = ret > 0.001
+        elif r["signal"] == "SELL":
+            r["correct"] = ret < -0.001
+        else:  # HOLD
+            r["correct"] = abs(ret) < 0.005
+        r["outcome"] = "resolved"
+        updated = True
+        break
+    if updated:
+        _save_records(path, records)
     return next((r for r in records if r["id"] == pred_id), None)
 
 
-# ── Compute calibrated accuracy ───────────────────────────────
+def get_pending_predictions(symbol: Optional[str] = None) -> List[Dict]:
+    """
+    Return all predictions whose horizon has elapsed but are not yet resolved.
+    If symbol is given, only that symbol's predictions are returned.
+    """
+    _ensure_dir()
+    now = time.time()
+    pending = []
+    files = (
+        [_results_path(symbol)] if symbol
+        else [os.path.join(RESULTS_DIR, f) for f in os.listdir(RESULTS_DIR) if f.endswith("_wfv.json")]
+    )
+    for path in files:
+        for r in _load_records(path):
+            if r.get("outcome") is None and r.get("horizon_due_ts", 0) <= now:
+                pending.append(r)
+    return pending
+
+
 
 def get_calibrated_accuracy(symbol: str, signal: str = "BUY") -> Dict[str, Any]:
     """
@@ -181,8 +248,7 @@ def walk_forward_test(
     Split data into train/test, train on first 75%, evaluate on last 25%.
     Returns real out-of-sample accuracy — the only honest measure.
     """
-    import numpy as np
-    from app.api.forecaster import build_features
+    from app.api.forecaster import build_features, compute_prediction_label
 
     n = len(candles)
     split = int(n * train_pct)
@@ -200,8 +266,9 @@ def walk_forward_test(
         feats = build_features(candles[:i + 1], ta_history[i])
         if feats is None:
             continue
-        future_ret = (candles[i + horizon]["c"] - candles[i]["c"]) / candles[i]["c"]
-        label = 1 if future_ret > 0.003 else (0 if future_ret < -0.003 else 2)
+        label = compute_prediction_label(candles, ta_history, i, horizon)
+        if label is None:
+            continue
         X_test.append(feats)
         y_test.append(label)
         prices.append(candles[i]["c"])
@@ -222,35 +289,75 @@ def walk_forward_test(
     total   = len(y_test)
     accuracy = round(correct / total * 100, 1)
 
-    # Per-class accuracy
+    # Per-class precision, recall, F1
+    per_class: Dict[str, Any] = {}
     for cls, name in [(1, "UP"), (0, "DOWN"), (2, "FLAT")]:
-        mask = y_test == cls
-        if mask.sum() > 0:
-            cls_acc = (preds[mask] == cls).sum() / mask.sum()
-        else:
-            cls_acc = 0
+        actual_mask = y_test == cls
+        pred_mask   = preds  == cls
+        tp = int((actual_mask & pred_mask).sum())
+        fp = int((~actual_mask & pred_mask).sum())
+        fn = int((actual_mask & ~pred_mask).sum())
+        precision = tp / (tp + fp) if (tp + fp) > 0 else 0.0
+        recall    = tp / (tp + fn) if (tp + fn) > 0 else 0.0
+        f1        = 2 * precision * recall / (precision + recall) if (precision + recall) > 0 else 0.0
+        per_class[name] = {
+            "count":     int(actual_mask.sum()),
+            "precision": round(precision, 3),
+            "recall":    round(recall, 3),
+            "f1":        round(f1, 3),
+        }
 
-    # Confidence calibration: does high confidence = high accuracy?
+    # Balanced accuracy: mean per-class recall (not fooled by FLAT dominance)
+    recalls = [per_class[n]["recall"] for n in ("UP", "DOWN", "FLAT")]
+    balanced_acc = round(float(np.mean(recalls)) * 100, 1)
+
+    # Actionable prediction rate: fraction of test samples predicted UP or DOWN
+    actionable_preds = int(((preds == 1) | (preds == 0)).sum())
+    actionable_rate  = round(actionable_preds / total * 100, 1)
+
+    # Confidence calibration
     max_proba = proba.max(axis=1)
     high_conf_mask = max_proba >= 0.6
     if high_conf_mask.sum() > 0:
         high_conf_acc = (preds[high_conf_mask] == y_test[high_conf_mask]).sum() / high_conf_mask.sum()
     else:
-        high_conf_acc = 0
+        high_conf_acc = 0.0
+
+    # FLAT dominance gate: reject model if >70% of test labels are FLAT
+    flat_pct = per_class["FLAT"]["count"] / total if total > 0 else 1.0
+    flat_dominant = flat_pct > 0.70
+
+    # is_useful: balanced accuracy > 40% AND UP/DOWN F1 both > 0.1
+    # AND not FLAT-dominant AND makes at least some actionable predictions
+    up_down_f1_ok = per_class["UP"]["f1"] > 0.10 and per_class["DOWN"]["f1"] > 0.10
+    is_useful = (
+        not flat_dominant
+        and balanced_acc > 40.0
+        and up_down_f1_ok
+        and actionable_rate >= 5.0
+    )
 
     return {
-        "test_samples":      total,
-        "train_samples":     split,
-        "accuracy_pct":      accuracy,
+        "test_samples":       total,
+        "train_samples":      split,
+        "accuracy_pct":       accuracy,
+        "balanced_accuracy":  balanced_acc,
         "high_conf_accuracy": round(float(high_conf_acc) * 100, 1),
-        "high_conf_samples": int(high_conf_mask.sum()),
+        "high_conf_samples":  int(high_conf_mask.sum()),
         "class_distribution": {
-            "UP":   int((y_test == 1).sum()),
-            "DOWN": int((y_test == 0).sum()),
-            "FLAT": int((y_test == 2).sum()),
+            "UP":   per_class["UP"]["count"],
+            "DOWN": per_class["DOWN"]["count"],
+            "FLAT": per_class["FLAT"]["count"],
         },
-        "is_better_than_random": accuracy > 40,  # 3-class random = 33%
-        "is_useful": accuracy > 50 and high_conf_acc > 0.55,
+        "per_class_metrics":  per_class,
+        "actionable_rate":    actionable_rate,
+        "flat_dominant":      flat_dominant,
+        "is_better_than_random": accuracy > 40,
+        "is_useful":          is_useful,
+        "is_useful_reason": (
+            "FLAT-dominant dataset" if flat_dominant else
+            f"balanced_acc={balanced_acc}% up_f1={per_class['UP']['f1']} down_f1={per_class['DOWN']['f1']} actionable={actionable_rate}%"
+        ),
     }
 
 

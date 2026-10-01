@@ -4,13 +4,13 @@
     "name": "My Portfolio",
     "owner": "user",
     "initial_balance": 100000.0,
-    "cash": 100077.76000000001,
-    "total_value": 100077.76,
-    "total_return_pct": 0.08,
-    "realised_pnl": 77.76,
+    "cash": 99903.09000000001,
+    "total_value": 99903.09,
+    "total_return_pct": -0.1,
+    "realised_pnl": -96.91,
     "unrealised_pnl": 0,
     "positions": {},
-    "trade_count": 14,
+    "trade_count": 16,
     "created_at": 1785828752.848163,
     "trades": [
       {
@@ -264,6 +264,42 @@
         "exit_price": null,
         "exit_time": null,
         "charges": 3.22
+      },
+      {
+        "id": "80d75c3c",
+        "portfolio_id": "71f06f16",
+        "symbol": "TDPOWERSYS",
+        "trade_type": "BUY",
+        "qty": 10,
+        "price": 1492.0,
+        "timestamp": 1786517038.6909542,
+        "trade_mode": "intraday",
+        "source": "user",
+        "ai_signal": null,
+        "ai_confidence": null,
+        "notes": "",
+        "pnl": -174.67,
+        "exit_price": 1476.3,
+        "exit_time": 1786527292.6608334,
+        "charges": 8.14
+      },
+      {
+        "id": "1b7b1e8c",
+        "portfolio_id": "71f06f16",
+        "symbol": "TDPOWERSYS",
+        "trade_type": "SELL",
+        "qty": 10,
+        "price": 1476.3,
+        "timestamp": 1786527292.661854,
+        "trade_mode": "intraday",
+        "source": "user",
+        "ai_signal": null,
+        "ai_confidence": null,
+        "notes": "",
+        "pnl": null,
+        "exit_price": null,
+        "exit_time": null,
+        "charges": 9.53
       }
     ],
     "daily_snapshots": [
@@ -272,9 +308,15 @@
         "value": 100077.76,
         "cash": 100077.76000000001,
         "ts": 1785834665.5966048
+      },
+      {
+        "date": "2026-08-12",
+        "value": 99903.09,
+        "cash": 99903.09000000001,
+        "ts": 1786527292.661854
       }
     ],
-    "_realised_pnl": 77.76
+    "_realised_pnl": -96.90999999999998
   },
   "e0e56c80": {
     "id": "e0e56c80",

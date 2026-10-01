@@ -309,10 +309,21 @@ _GROQ_PROFILE = LLMProfile(
     name            = "groq",
     display_name    = "Groq",
     backend         = LLMBackend.GROQ,
-    model           = "llama-3.3-70b-versatile",
+    model           = "qwen/qwen3.8-27b",
     priority        = 20,
     credentials_key = "GROQ",
     base_url        = "https://api.groq.com/openai/v1",
+    plugin_class    = "app.core.llm.OpenAICompatibleProvider",
+)
+
+_OPENROUTER_PROFILE = LLMProfile(
+    name            = "openrouter",
+    display_name    = "OpenRouter",
+    backend         = LLMBackend.OPENROUTER,
+    model           = "qwen/qwen3.8-27b:free",
+    priority        = 10,
+    credentials_key = "OPENROUTER",
+    base_url        = "https://openrouter.ai/api/v1",
     plugin_class    = "app.core.llm.OpenAICompatibleProvider",
 )
 
@@ -382,9 +393,10 @@ def build_ai_settings(overrides: Optional[dict] = None) -> AISettings:
     })
 
     profiles: Dict[str, LLMProfile] = {
-        "gemini": _GEMINI_PROFILE,
-        "groq":   _GROQ_PROFILE,
-        "ollama": ollama_profile,
+        "openrouter": _OPENROUTER_PROFILE,
+        "gemini":     _GEMINI_PROFILE,
+        "groq":       _GROQ_PROFILE,
+        "ollama":     ollama_profile,
     }
 
     values: dict = {

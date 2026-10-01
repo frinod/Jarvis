@@ -87,8 +87,24 @@ async def fetch_candles(
     if from_ts is None:
         from_ts = to_ts - days * 24 * 3600 * 1000
 
-    # Check cache
     cache = get_cache()
+    explicit_range = (from_ts is not None)  # caller specified exact range
+
+    now_ms = int(time.time() * 1000)
+    if to_ts is None:
+        to_ts = now_ms
+    if from_ts is None:
+        from_ts = to_ts - days * 24 * 3600 * 1000
+
+    # Snapshot cache: hit when same symbol+interval+days requested within TTL.
+    # Covers the common case where TA, forecast, and MTF all call fetch_candles
+    # for the same stock within seconds of each other.
+    if not explicit_range:
+        snap = cache.get_snapshot(symbol, interval, days)
+        if snap:
+            return {**snap, "cached": True}
+
+    # Exact-key cache (for explicit from_ts/to_ts callers)
     cached = cache.get_candles(symbol, interval, from_ts, to_ts)
     if cached:
         return {**cached, "cached": True}
@@ -126,8 +142,9 @@ async def fetch_candles(
         "warnings": warnings,
     }
 
-    # Store in cache
+    # Store in both caches
     cache.set_candles(symbol, interval, from_ts, to_ts, out)
+    cache.set_snapshot(symbol, interval, days, out)
     return out
 
 

@@ -34,11 +34,12 @@ function VoiceCommandPanel() {
     <div
       className="flex flex-col shrink-0"
       style={{
-        width: 240,
+        width: 280,
         background: 'rgba(3,10,24,0.97)',
-        border: '1px solid rgba(0,217,255,0.1)',
+        border: '1px solid rgba(0,217,255,0.12)',
         borderRadius: 2,
-        padding: '10px 12px',
+        padding: '12px 14px',
+        boxShadow: 'inset 0 0 20px rgba(0,217,255,0.02)',
       }}
     >
       {/* Header */}
@@ -51,7 +52,7 @@ function VoiceCommandPanel() {
       </div>
 
       {/* Waveform */}
-      <div className="flex items-center gap-[1.5px] mb-3 relative" style={{ height: 40 }}>
+      <div className="flex items-center gap-[1.5px] mb-3 relative" style={{ height: 56 }}>
         {isActive && (
           <div className="absolute inset-0 pointer-events-none"
             style={{ background: `radial-gradient(ellipse 70% 100% at 50% 50%, ${barColor}22 0%, transparent 70%)` }} />
@@ -106,11 +107,12 @@ function VoiceCommandPanel() {
 
 // ── Provider labels ───────────────────────────────────────────
 const PROVIDER_LABELS: Record<string, { label: string; color: string }> = {
-  gemini:   { label: 'Gemini',   color: '#00D9FF' },
-  groq:     { label: 'Groq',     color: '#7B5EA7' },
-  deepseek: { label: 'DeepSeek', color: '#00F5FF' },
-  openai:   { label: 'OpenAI',   color: '#00FF9C' },
-  ollama:   { label: 'Ollama',   color: '#FFB347' },
+  openrouter: { label: 'OpenRouter', color: '#FF6B6B' },
+  gemini:     { label: 'Gemini',     color: '#00D9FF' },
+  groq:       { label: 'Groq',       color: '#7B5EA7' },
+  deepseek:   { label: 'DeepSeek',   color: '#00F5FF' },
+  openai:     { label: 'OpenAI',     color: '#00FF9C' },
+  ollama:     { label: 'Ollama',     color: '#FFB347' },
 }
 
 interface TradeProposal {
@@ -178,7 +180,7 @@ function CommandConsole() {
 
   return (
     <div className="flex-1 flex overflow-hidden"
-      style={{ border: '1px solid rgba(0,217,255,0.1)', borderRadius: 2, background: 'rgba(3,10,24,0.97)' }}>
+      style={{ border: '1px solid rgba(0,217,255,0.12)', borderRadius: 2, background: 'rgba(3,10,24,0.97)', boxShadow: 'inset 0 0 20px rgba(0,217,255,0.02)' }}>
 
       {/* Console area */}
       <div className="flex-1 flex flex-col min-w-0 overflow-hidden">
@@ -380,7 +382,7 @@ function CommandConsole() {
 export function BottomRow() {
   return (
     <div className="flex shrink-0 gap-2 overflow-hidden"
-      style={{ height: 160, padding: '0 10px 8px 10px' }}>
+      style={{ height: 200, padding: '0 10px 8px 10px' }}>
       <VoiceCommandPanel />
       <CommandConsole />
     </div>

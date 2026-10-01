@@ -101,6 +101,23 @@ class MarketCache:
         ttl = _CANDLE_TTL.get(interval, TTL_CANDLE_5M)
         self.set(key, data, ttl)
 
+    # ── Snapshot cache: same symbol+interval+days within one TTL window ──
+    # Callers that compute from_ts = now - days*86400000 independently will
+    # get slightly different from_ts values each call, so the exact-key cache
+    # above never hits.  The snapshot cache uses a rounded bucket key so all
+    # callers within the same TTL window share one network fetch.
+
+    def _snapshot_key(self, symbol: str, interval: str, days: int) -> str:
+        bucket = int(time.time() // _CANDLE_TTL.get(interval, TTL_CANDLE_5M))
+        return f"snap:{symbol}:{interval}:{days}:{bucket}"
+
+    def get_snapshot(self, symbol: str, interval: str, days: int) -> Optional[Any]:
+        return self.get(self._snapshot_key(symbol, interval, days))
+
+    def set_snapshot(self, symbol: str, interval: str, days: int, data: Any):
+        ttl = _CANDLE_TTL.get(interval, TTL_CANDLE_5M)
+        self.set(self._snapshot_key(symbol, interval, days), data, ttl)
+
     def get_quote(self, symbol: str):
         return self.get(f"quote:{symbol}")
 

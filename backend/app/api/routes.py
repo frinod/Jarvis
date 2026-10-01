@@ -915,9 +915,58 @@ async def ai_runtime_status():
 
 
 
+# ─── Intent Classification Routes ──────────────────────────
+
+class IntentRequest(BaseModel):
+    text: str
+
+
+@router.post("/intent/classify")
+async def classify_intent_route(req: IntentRequest):
+    """Classify a user message into intent + tool plan. No LLM call."""
+    from app.api.jarvis_intent import classify_intent
+    result = classify_intent(req.text)
+    return {
+        "intent":     result.intent,
+        "symbols":    result.symbols,
+        "params":     result.params,
+        "confidence": result.confidence,
+        "tool_plan":  result.tool_plan,
+    }
+
+
+@router.get("/intent/check")
+async def check_market_query(text: str):
+    """Quick check: is this text a market query (true) or general AI (false)?"""
+    from app.api.jarvis_intent import is_market_query
+    return {"is_market_query": is_market_query(text), "text": text}
+
+
 async def execute_tool(req: ToolRequest):
     orch = get_orchestrator()
     return await orch.execute_tool(req.tool_name, req.params, req.confirmed)
+
+
+# ─── Kiro CLI Routes ──────────────────────────────────────────
+
+class KiroAskRequest(BaseModel):
+    query: str
+    agent: str = "jarvis"
+
+
+@router.post("/kiro/ask")
+async def kiro_ask(req: KiroAskRequest):
+    """Delegate a query to kiro-cli serve and return the response."""
+    from app.tools.kiro_tool import ask_kiro
+    result = await ask_kiro(req.query, agent=req.agent)
+    return result
+
+
+@router.get("/kiro/status")
+async def kiro_status():
+    """Check if kiro-cli serve is running and reachable."""
+    from app.tools.kiro_tool import kiro_status as _status
+    return await _status()
 
 
 @router.get("/tools")

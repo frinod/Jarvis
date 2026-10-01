@@ -1,44 +1,45 @@
 'use client'
 
 import React, { useEffect, useRef } from 'react'
-import { Header } from '@/components/Header'
-import { LeftPanel } from '@/components/LeftPanel'
-import { CenterColumn } from '@/components/CenterColumn'
-import { RightPanel } from '@/components/RightPanel'
-import { BottomRow } from '@/components/BottomRow'
-import { BottomNav } from '@/components/BottomNav'
 import { ParticleBackground } from '@/components/ParticleBackground'
 import { QuickTradeModal } from '@/components/QuickTradeModal'
-import { Sidebar } from '@/components/Sidebar'
-import { VoiceBar } from '@/components/VoiceBar'
 import { HolographicModal } from '@/components/HolographicModal'
 import { JarvisOverlay } from '@/components/JarvisOverlay'
 import { NotificationToasts } from '@/components/NotificationToasts'
 import { HudPanelManager } from '@/components/HudPanelManager'
+import { VoiceBar } from '@/components/VoiceBar'
+import { JarvisBoot } from '@/components/JarvisBoot'
+import { Ignition } from '@/components/Ignition'
+import { BladeSweep } from '@/components/BladeSweep'
+import { JarvisEffects } from '@/components/JarvisEffects'
+import { JarvisSuggestions } from '@/components/JarvisSuggestions'
 import { useJarvisStore } from '@/store/jarvisStore'
 
-// ── Sub-page imports ──────────────────────────────────────────
+import { TopHud } from '@/components/TopHud'
+import { LeftSidebar } from '@/components/LeftSidebar'
+import { CenterWorkspace } from '@/components/CenterWorkspace'
+import { RightIntelPanel } from '@/components/RightIntelPanel'
+
 import { StocksPage } from '@/components/StocksPage'
-import { SettingsPage } from '@/components/SettingsPage'
 import { MarketDashboardPage } from '@/components/MarketDashboardPage'
+import { TopPicksPage } from '@/components/TopPicksPage'
 import { AIDiscoveryPage } from '@/components/AIDiscoveryPage'
+import { IntradayAssistantPage } from '@/components/IntradayAssistantPage'
 import { WatchlistPage } from '@/components/WatchlistPage'
 import { PortfolioPage } from '@/components/PortfolioPage'
-import { NewsPage } from '@/components/NewsPage'
-import { CalendarPage } from '@/components/CalendarPage'
-import { BudgetAdvisorPage } from '@/components/BudgetAdvisorPage'
-import { TopPicksPage } from '@/components/TopPicksPage'
-import { IntradayAssistantPage } from '@/components/IntradayAssistantPage'
 import { PaperTradingPage } from '@/components/PaperTradingPage'
 import { BacktestPage } from '@/components/BacktestPage'
+import { BudgetAdvisorPage } from '@/components/BudgetAdvisorPage'
+import { NewsPage } from '@/components/NewsPage'
+import { CalendarPage } from '@/components/CalendarPage'
 import { AgentsPanel } from '@/components/AgentsPanel'
 import { SystemMonitor } from '@/components/SystemMonitor'
 import { LLMStatus } from '@/components/LLMStatus'
 import { TaskPanel } from '@/components/TaskPanel'
+import { SettingsPage } from '@/components/SettingsPage'
 
-// ── Sub-page router ───────────────────────────────────────────
-function ActivePage({ nav }: { nav: string }) {
-  switch (nav) {
+function ActiveModule({ id }: { id: string }) {
+  switch (id) {
     case 'stocks':       return <StocksPage />
     case 'market':       return <MarketDashboardPage />
     case 'toppicks':     return <TopPicksPage />
@@ -48,28 +49,31 @@ function ActivePage({ nav }: { nav: string }) {
     case 'portfolio':    return <PortfolioPage />
     case 'papertrading': return <PaperTradingPage />
     case 'backtest':     return <BacktestPage />
+    case 'budget':       return <BudgetAdvisorPage />
     case 'news':         return <NewsPage />
     case 'calendar':     return <CalendarPage />
-    case 'budget':       return <BudgetAdvisorPage />
+    case 'agents':       return <div className="p-6"><AgentsPanel /></div>
+    case 'monitor':      return <div className="p-6"><SystemMonitor /></div>
+    case 'llm':          return <div className="p-6"><LLMStatus /></div>
+    case 'tasks':        return <div className="p-6"><TaskPanel /></div>
     case 'settings':     return <SettingsPage />
-    case 'agents':       return <div className="p-5 max-w-lg"><AgentsPanel /></div>
-    case 'monitor':      return <div className="p-5 max-w-lg"><SystemMonitor /></div>
-    case 'llm':          return <div className="p-5 max-w-lg"><LLMStatus /></div>
-    case 'tasks':        return <div className="p-5 max-w-lg"><TaskPanel /></div>
     default:             return null
   }
 }
 
-// ── ROOT ──────────────────────────────────────────────────────
 export default function Home() {
-  const startPolling = useJarvisStore(s => s.startPolling)
-  const activeNav    = useJarvisStore(s => s.activeNav)
   const status       = useJarvisStore(s => s.status)
+  const activeNav    = useJarvisStore(s => s.activeNav)
+  const setPhase     = useJarvisStore(s => s.setPhase)
+  const phase        = useJarvisStore(s => s.phase)
   const glowRef      = useRef<HTMLDivElement>(null)
+  const booting      = useRef(false)
 
-  useEffect(() => { const stop = startPolling(); return stop }, [startPolling])
+  useEffect(() => {
+    const stop = useJarvisStore.getState().startPolling()
+    return stop
+  }, []) // eslint-disable-line
 
-  // Cursor glow follow
   useEffect(() => {
     const move = (e: MouseEvent) => {
       if (glowRef.current) {
@@ -81,94 +85,102 @@ export default function Home() {
     return () => window.removeEventListener('mousemove', move)
   }, [])
 
-  const isDashboard = activeNav === 'dashboard'
+  // Space bar also triggers power-on from offline
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.code === 'Space' && !e.repeat && useJarvisStore.getState().phase === 'offline') {
+        e.preventDefault()
+        void powerOn()
+      }
+    }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, []) // eslint-disable-line
 
-  // State-based ambient background
-  const stateBg: Record<string, string> = {
-    idle:      'radial-gradient(ellipse 90% 50% at 50% 100%, rgba(0,157,255,0.04) 0%, transparent 70%)',
-    listening: 'radial-gradient(ellipse 90% 50% at 50% 100%, rgba(0,255,153,0.05) 0%, transparent 70%)',
-    thinking:  'radial-gradient(ellipse 90% 50% at 50% 100%, rgba(0,157,255,0.07) 0%, transparent 70%)',
-    speaking:  'radial-gradient(ellipse 90% 50% at 50% 100%, rgba(51,242,255,0.07) 0%, transparent 70%)',
-    executing: 'radial-gradient(ellipse 90% 50% at 50% 100%, rgba(255,200,87,0.05) 0%, transparent 70%)',
+  const powerOn = async () => {
+    if (booting.current) return
+    booting.current = true
+    try {
+      // Unlock audio INSIDE the click handler — browsers require a user gesture
+      const sfx = await import('@/lib/sfx')
+      await sfx.unlockAudio()
+      setPhase('boot')
+    } catch (err) {
+      booting.current = false
+      console.error('[jarvis] power-up failed:', err)
+    }
   }
 
+  const stateBg: Record<string, string> = {
+    idle:      'radial-gradient(ellipse 80% 60% at 50% 50%, rgba(0,157,255,0.03) 0%, transparent 70%)',
+    listening: 'radial-gradient(ellipse 80% 60% at 50% 50%, rgba(0,255,153,0.04) 0%, transparent 70%)',
+    thinking:  'radial-gradient(ellipse 80% 60% at 50% 50%, rgba(0,157,255,0.06) 0%, transparent 70%)',
+    speaking:  'radial-gradient(ellipse 80% 60% at 50% 50%, rgba(51,242,255,0.05) 0%, transparent 70%)',
+    executing: 'radial-gradient(ellipse 80% 60% at 50% 50%, rgba(255,200,87,0.04) 0%, transparent 70%)',
+  }
+
+  const isDashboard = activeNav === 'dashboard'
+
   return (
-    <main
-      className="h-screen flex flex-col overflow-hidden hud-grid"
-      style={{ background: '#020813' }}
-    >
+    <main className="h-screen flex flex-col overflow-hidden hud-grid" style={{ background: '#020812' }}>
       <ParticleBackground />
       <div className="noise-overlay" />
       <div className="fog-layer" />
       <div className="scan-line" />
 
-      {/* Ambient state glow */}
-      <div
-        className="fixed inset-0 pointer-events-none transition-all duration-1000"
-        style={{ background: stateBg[status] || stateBg.idle, zIndex: 1 }}
-      />
+      <div className="fixed inset-0 pointer-events-none transition-all duration-1000"
+        style={{ background: stateBg[status] || stateBg.idle, zIndex: 1 }} />
 
       <div ref={glowRef} className="cursor-glow" />
+
+      {/* Ignition — shown only when phase === 'offline'. Click unlocks audio + starts boot. */}
+      <Ignition onStart={() => void powerOn()} />
+
+      {/* Boot sequence — fullscreen overlay, auto-dismisses after 8.8s */}
+      <JarvisBoot onComplete={() => {
+        setPhase('dormant')
+        useJarvisStore.getState().setVoiceActive(true)
+      }} />
+
+      {/* Blade sweep — light slivers during tooling */}
+      <BladeSweep />
+
+      {/* One-shot frame effects */}
+      <JarvisEffects />
+
+      {/* Modal overlays */}
       <QuickTradeModal />
       <HolographicModal />
       <JarvisOverlay />
       <NotificationToasts />
       <HudPanelManager />
 
-      {/* VoiceBar engine — hidden, always mounted so SpeechRecognition runs */}
-      <div className="hidden">
-        <VoiceBar />
-      </div>
+      {/* Top HUD */}
+      <TopHud />
 
-      {/* ── Header (full width) ── */}
-      <Header />
-
-      {/* ── Body ── */}
+      {/* Body */}
       <div className="flex-1 flex overflow-hidden" style={{ position: 'relative', zIndex: 10 }}>
+        <LeftSidebar />
 
         {isDashboard ? (
-          // ── Dashboard layout: Left | Center | Right ──
-          <div className="flex-1 flex flex-col overflow-hidden">
-
-            {/* Main 3-column row */}
-            <div className="flex-1 flex overflow-hidden" style={{ padding: '8px 8px 0 8px', gap: 8 }}>
-
-              {/* Left panel */}
-              <div className="hidden lg:flex relative">
-                <LeftPanel />
-              </div>
-
-              {/* Center column */}
-              <CenterColumn />
-
-              {/* Right panel */}
-              <div className="hidden lg:flex">
-                <RightPanel />
-              </div>
-
-            </div>
-
-            {/* Bottom row: Voice + Console */}
-            <BottomRow />
-
-          </div>
+          <CenterWorkspace />
         ) : (
-          // ── Sub-page layout: Sidebar + content ──
-          <div className="flex-1 flex overflow-hidden">
-            <div className="hidden md:flex">
-              <Sidebar />
-            </div>
-            <div className="flex-1 overflow-y-auto">
-              <ActivePage nav={activeNav} />
+          <div className="flex-1 flex flex-col min-w-0 overflow-hidden"
+            style={{ borderRight: '1px solid rgba(0,217,255,0.08)' }}>
+            <div className="flex-1 overflow-y-auto" style={{ scrollbarWidth: 'thin' }}>
+              <ActiveModule id={activeNav} />
             </div>
           </div>
         )}
 
+        <RightIntelPanel />
       </div>
 
-      {/* ── Bottom Nav (always visible) ── */}
-      <BottomNav />
+      {/* Rotating suggestions — visible only while dormant + no messages */}
+      <JarvisSuggestions />
 
+      {/* VoiceBar — always visible at bottom */}
+      <VoiceBar />
     </main>
   )
 }

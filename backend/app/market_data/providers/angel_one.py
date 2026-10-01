@@ -27,6 +27,20 @@ from app.market_data import instruments
 
 log = logging.getLogger(__name__)
 
+# ── Rate-limit guard ──────────────────────────────────────────
+# Angel One's getCandleData endpoint rate-limits aggressively.
+# Serialise all chunk fetches through a single semaphore and
+# back off exponentially when a rate-limit response is received.
+_CHUNK_SEM = asyncio.Semaphore(1)   # one in-flight candle request at a time
+_RATE_LIMIT_BACKOFF_SECS = 5.0      # initial back-off on rate-limit hit
+_INTER_CHUNK_SLEEP_SECS  = 0.4      # minimum gap between chunks
+
+
+def _is_rate_limit_error(exc: Exception) -> bool:
+    msg = str(exc).lower()
+    return "access denied" in msg or "rate" in msg or "exceeding" in msg
+
+
 # ── Interval mapping: Interval → Angel One string ─────────────
 _INTERVAL_MAP: Dict[Interval, str] = {
     Interval.MIN_1:  "ONE_MINUTE",
@@ -174,7 +188,7 @@ class AngelOneProvider(MarketDataProvider):
                 return empty
             chunk_start = chunk_end + 1
             if chunk_start < to_ts:
-                await asyncio.sleep(0.15)   # rate-limit guard
+                await asyncio.sleep(_INTER_CHUNK_SLEEP_SECS)
 
         # Deduplicate and sort
         seen: set = set()
@@ -205,7 +219,11 @@ class AngelOneProvider(MarketDataProvider):
         from_ms:  int,
         to_ms:    int,
     ) -> List[Candle]:
-        """Fetch a single date-range chunk from Angel One getCandleData."""
+        """Fetch a single date-range chunk from Angel One getCandleData.
+
+        Serialised through _CHUNK_SEM (one request at a time) and retries
+        with exponential back-off on rate-limit responses.
+        """
         from_str = self.ms_to_ist_str(from_ms)
         to_str   = self.ms_to_ist_str(to_ms)
 
@@ -217,48 +235,56 @@ class AngelOneProvider(MarketDataProvider):
             "todate":      to_str,
         }
 
+        backoff = _RATE_LIMIT_BACKOFF_SECS
         for attempt in range(3):
-            try:
-                loop = asyncio.get_event_loop()
-                resp = await loop.run_in_executor(
-                    _executor,
-                    lambda p=params: self._session.smart_api.getCandleData(p)
-                )
-                if not resp or resp.get("status") is not True:
-                    msg = resp.get("message", "no message") if resp else "null response"
-                    # Token expired mid-session
-                    if "token" in msg.lower() or "unauthori" in msg.lower():
-                        await self._session.invalidate()
-                        if await self._session.ensure_logged_in():
+            async with _CHUNK_SEM:
+                try:
+                    loop = asyncio.get_event_loop()
+                    resp = await loop.run_in_executor(
+                        _executor,
+                        lambda p=params: self._session.smart_api.getCandleData(p)
+                    )
+                    if not resp or resp.get("status") is not True:
+                        msg = resp.get("message", "no message") if resp else "null response"
+                        if "token" in msg.lower() or "unauthori" in msg.lower():
+                            await self._session.invalidate()
+                            if await self._session.ensure_logged_in():
+                                continue
+                        log.warning(f"[AngelOne] getCandleData failed: {msg}")
+                        return []
+
+                    raw = resp.get("data", [])
+                    if not isinstance(raw, list):
+                        return []
+
+                    candles = []
+                    for row in raw:
+                        try:
+                            ts_ms = _iso_to_ms(row[0])
+                            candles.append(Candle(
+                                t=ts_ms,
+                                o=float(row[1]),
+                                h=float(row[2]),
+                                l=float(row[3]),
+                                c=float(row[4]),
+                                v=int(row[5]),
+                            ))
+                        except (IndexError, ValueError, TypeError):
                             continue
-                    log.warning(f"[AngelOne] getCandleData failed: {msg}")
-                    return []
+                    return candles
 
-                raw = resp.get("data", [])
-                if not isinstance(raw, list):
-                    return []
-
-                candles = []
-                for row in raw:
-                    try:
-                        # Angel One format: [timestamp_iso, open, high, low, close, volume]
-                        ts_ms = _iso_to_ms(row[0])
-                        candles.append(Candle(
-                            t=ts_ms,
-                            o=float(row[1]),
-                            h=float(row[2]),
-                            l=float(row[3]),
-                            c=float(row[4]),
-                            v=int(row[5]),
-                        ))
-                    except (IndexError, ValueError, TypeError):
-                        continue
-                return candles
-
-            except Exception as e:
-                log.warning(f"[AngelOne] Chunk fetch attempt {attempt+1} failed: {e}")
-                if attempt < 2:
-                    await asyncio.sleep(0.5 * (attempt + 1))
+                except Exception as e:
+                    if _is_rate_limit_error(e):
+                        log.warning(
+                            f"[AngelOne] Rate-limit on attempt {attempt+1} "
+                            f"— backing off {backoff:.1f}s"
+                        )
+                        await asyncio.sleep(backoff)
+                        backoff *= 2   # exponential: 5s → 10s → 20s
+                    else:
+                        log.warning(f"[AngelOne] Chunk fetch attempt {attempt+1} failed: {e}")
+                        if attempt < 2:
+                            await asyncio.sleep(0.5 * (attempt + 1))
 
         return []
 

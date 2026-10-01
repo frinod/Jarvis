@@ -132,20 +132,39 @@ async def get_ai_discovery(category: str = "all", universe: str = "nifty50") -> 
             if ta.get("error"):
                 return None
 
-            price    = stock.get("price", candles[-1]["c"])
-            base     = score_stock(ta, price)
-            ind      = ta.get("indicators", {})
+            # Real XGBoost forecast
+            from app.api.forecaster import forecast as _forecast_fn
+            from app.ai.prediction.forecasting import ForecastResult
+            try:
+                raw_forecast = await _forecast_fn(stock["symbol"], horizon=30)
+                fr = ForecastResult.from_dict(raw_forecast)
+            except Exception:
+                fr = ForecastResult.unavailable(reason="forecast_exception")
+
+            price     = stock.get("price", candles[-1]["c"])
+            base      = score_stock(ta, price)
+            ind       = ta.get("indicators", {})
             cat_score = base["score"]
             cat_reason = base["top_reasons"][:2]
 
-            # Apply regime filter to raw signal
-            raw_signal = ta.get("overall_signal", "HOLD")
-            regime_result = apply_regime_filter(raw_signal, regime)
-            filtered_signal = regime_result["signal"]
-
-            # Skip stocks where regime suppressed the signal
-            if regime_result.get("regime_adjusted") and filtered_signal == "HOLD":
-                cat_score = max(0, cat_score - 20)  # penalise, don’t remove entirely
+            # Use real model signal when available, fall back to TA + regime filter
+            if fr.is_valid:
+                raw_signal       = fr.trade_signal
+                filtered_signal  = raw_signal
+                model_direction  = fr.direction
+                model_confidence = fr.confidence
+                regime_result    = {"signal": raw_signal, "regime_adjusted": fr.regime_adjusted,
+                                    "warning": fr.regime_warning}
+                if fr.regime_adjusted and filtered_signal == "HOLD":
+                    cat_score = max(0, cat_score - 20)
+            else:
+                raw_signal       = ta.get("overall_signal", "HOLD")
+                regime_result    = apply_regime_filter(raw_signal, regime)
+                filtered_signal  = regime_result["signal"]
+                model_direction  = None
+                model_confidence = None
+                if regime_result.get("regime_adjusted") and filtered_signal == "HOLD":
+                    cat_score = max(0, cat_score - 20)
 
             if category == "intraday":
                 vol_ratio = ind.get("volume_ratio") or 1
@@ -161,10 +180,10 @@ async def get_ai_discovery(category: str = "all", universe: str = "nifty50") -> 
                 supports = sr.get("support", [])
                 if supports and abs(price - supports[0]) / price < 0.02:
                     cat_score += 15
-                    cat_reason.append("Price near key support — swing entry")
+                    cat_reason.append("Price near key support - swing entry")
 
             elif category == "momentum":
-                rsi   = ind.get("rsi") or 50
+                rsi = ind.get("rsi") or 50
                 if 50 < rsi < 70 and ta.get("trend") in ("uptrend", "strong_uptrend"):
                     cat_score += 20
                     cat_reason.append("Momentum: RSI 50-70 in uptrend")
@@ -173,12 +192,11 @@ async def get_ai_discovery(category: str = "all", universe: str = "nifty50") -> 
                 dc_upper = ind.get("donchian_upper") or price
                 if abs(price - dc_upper) / price < 0.01:
                     cat_score += 20
-                    cat_reason.append("Near 20-period high — breakout candidate")
+                    cat_reason.append("Near 20-period high - breakout candidate")
                 bos = [e for e in ta.get("bos_choch", []) if e["type"] == "BOS" and e["direction"] == "bullish"]
                 if bos:
                     cat_score += 10
                     cat_reason.append("BOS bullish confirmed")
-                # Penalise breakouts in sideways/high-vol regime
                 if regime.get("avoid_breakouts"):
                     cat_score = max(0, cat_score - 15)
                     cat_reason.append(f"Caution: breakouts unreliable in {regime.get('regime')} regime")
@@ -187,50 +205,59 @@ async def get_ai_discovery(category: str = "all", universe: str = "nifty50") -> 
                 rsi = ind.get("rsi") or 50
                 if rsi < 40:
                     cat_score += 15
-                    cat_reason.append(f"RSI {rsi:.0f} — oversold value zone")
+                    cat_reason.append(f"RSI {rsi:.0f} - oversold value zone")
 
             elif category == "growth":
                 if ta.get("trend") == "strong_uptrend":
                     cat_score += 20
-                    cat_reason.append("Strong uptrend — growth momentum")
+                    cat_reason.append("Strong uptrend - growth momentum")
 
             elif category == "dividend":
                 atr     = ind.get("atr") or 0
                 atr_pct = (atr / price * 100) if price else 0
                 if atr_pct < 1.5:
                     cat_score += 15
-                    cat_reason.append("Low volatility — stable dividend candidate")
+                    cat_reason.append("Low volatility - stable dividend candidate")
 
             elif category == "longterm":
                 e200 = ind.get("ema200") or price
                 if price > e200:
                     cat_score += 20
-                    cat_reason.append("Price above EMA200 — long-term uptrend")
+                    cat_reason.append("Price above EMA200 - long-term uptrend")
 
             cat_score = round(min(100, max(0, cat_score)), 1)
 
             return {
-                "symbol":       stock["symbol"],
-                "name":         stock.get("name", stock["symbol"]),
-                "sector":       stock.get("sector", "Other"),
-                "price":        price,
-                "change_pct":   stock.get("change_pct", 0),
-                "score":        cat_score,
-                "grade":        base["grade"],
-                "signal":       filtered_signal,
-                "trend":        ta.get("trend"),
-                "confidence":   ta.get("confidence"),
-                "stop_loss":    ta.get("stop_loss"),
-                "target1":      ta.get("target1"),
-                "target2":      ta.get("target2"),
-                "risk_reward":  ta.get("risk_reward"),
-                "reasons":      cat_reason[:3],
-                "volume_ratio": ind.get("volume_ratio"),
-                "rsi":          ind.get("rsi"),
-                "atr":          ind.get("atr"),
-                "category":     category,
-                "data_quality": quality.get("quality_score"),
-                "regime_note":  regime_result.get("warning"),
+                "symbol":           stock["symbol"],
+                "name":             stock.get("name", stock["symbol"]),
+                "sector":           stock.get("sector", "Other"),
+                "price":            price,
+                "change_pct":       stock.get("change_pct", 0),
+                "score":            cat_score,
+                "grade":            base["grade"],
+                "signal":           filtered_signal,
+                "trend":            ta.get("trend"),
+                "confidence":       model_confidence if model_confidence is not None else ta.get("confidence"),
+                "stop_loss":        fr.stop_loss  if fr.is_valid else ta.get("stop_loss"),
+                "target1":          fr.target1    if fr.is_valid else ta.get("target1"),
+                "target2":          fr.target2    if fr.is_valid else ta.get("target2"),
+                "risk_reward":      ta.get("risk_reward"),
+                "reasons":          cat_reason[:3],
+                "volume_ratio":     ind.get("volume_ratio"),
+                "rsi":              ind.get("rsi"),
+                "atr":              ind.get("atr"),
+                "category":         category,
+                "data_quality":     quality.get("quality_score"),
+                "regime_note":      regime_result.get("warning"),
+                "model_direction":  model_direction,
+                "model_confidence": model_confidence,
+                "model_name":       fr.model_name if fr.is_valid else None,
+                "prob_up":          fr.prob_up    if fr.is_valid else None,
+                "prob_down":        fr.prob_down  if fr.is_valid else None,
+                "prob_flat":        fr.prob_flat  if fr.is_valid else None,
+                "wfv_accuracy":     fr.wfv_accuracy   if fr.is_valid else None,
+                "mtf_confluence":   fr.mtf_confluence if fr.is_valid else None,
+                "forecast_source":  "xgboost" if fr.is_valid else "ta_fallback",
             }
         except Exception:
             return None
@@ -256,10 +283,6 @@ async def get_ai_discovery(category: str = "all", universe: str = "nifty50") -> 
     }
     _set_cache(cache_key, result)
     return result
-
-
-# ── Market Depth (simulated from Yahoo bid/ask) ───────────────
-
 async def get_market_depth(symbol: str) -> Dict[str, Any]:
     """Fetch bid/ask depth from Yahoo Finance quote."""
     try:

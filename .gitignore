@@ -90,6 +90,10 @@ temp/
 *.orig
 tmp_orch.txt
 
+# ── ML Models (large binaries — store separately) ────────
+backend/models/*.pkl
+backend/models/*.meta
+
 # ── Build artifacts ───────────────────────────────────────
 *.pyc
 *.pyo
