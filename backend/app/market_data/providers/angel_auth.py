@@ -60,6 +60,8 @@ class AngelSession:
         self._login_at:    float = 0.0
         self._last_error:  Optional[str] = None
         self._lock = asyncio.Lock()
+        # Auth failure cooldown — prevents login storms
+        self._login_fail_until: float = 0.0
 
     # ── Public API ────────────────────────────────────────────
 
@@ -112,6 +114,12 @@ class AngelSession:
                 self._last_error = "Credentials missing or incomplete"
                 return False
 
+            # Auth failure cooldown — do not hammer login after repeated failures
+            if time.time() < self._login_fail_until:
+                remaining = self._login_fail_until - time.time()
+                log.debug(f"[AngelOne] Auth cooldown active — {remaining:.0f}s remaining")
+                return False
+
             # Already logged in and token is fresh
             if self._logged_in and self._jwt:
                 age = time.time() - self._login_at
@@ -152,7 +160,17 @@ class AngelSession:
                 msg = resp.get("message", "unknown") if resp else "no response"
                 self._last_error = f"Login failed: {msg}"
                 self._logged_in  = False
-                log.error(f"[AngelOne] {self._last_error}")
+                # Trip auth failure cooldown
+                try:
+                    from app.core.config import settings
+                    cooldown = settings.angel_login_failure_cooldown_seconds
+                except Exception:
+                    cooldown = 30
+                self._login_fail_until = time.time() + cooldown
+                log.error(
+                    f"[AngelOne] {self._last_error} "
+                    f"— auth cooldown {cooldown}s"
+                )
                 return False
 
             data = resp.get("data", {})
@@ -165,6 +183,7 @@ class AngelSession:
             self._logged_in   = True
             self._login_at    = time.time()
             self._last_error  = None
+            self._login_fail_until = 0.0  # clear cooldown on success
 
             # Set token on the SmartConnect instance
             self._smart_api.setAccessToken(self._jwt)
@@ -175,7 +194,13 @@ class AngelSession:
         except Exception as e:
             self._last_error = str(e)
             self._logged_in  = False
-            log.error(f"[AngelOne] Login exception: {e}")
+            try:
+                from app.core.config import settings
+                cooldown = settings.angel_login_failure_cooldown_seconds
+            except Exception:
+                cooldown = 30
+            self._login_fail_until = time.time() + cooldown
+            log.error(f"[AngelOne] Login exception: {e} — auth cooldown {cooldown}s")
             return False
 
     async def _refresh_token(self) -> bool:
@@ -202,14 +227,16 @@ class AngelSession:
 
     def get_status_dict(self) -> Dict:
         age = int(time.time() - self._login_at) if self._login_at else 0
+        auth_cooldown_remaining = max(0.0, self._login_fail_until - time.time())
         return {
-            "logged_in":    self._logged_in,
-            "client_id":    self._client_id,
-            "session_age_s": age,
-            "token_present": self._jwt is not None,
-            "feed_token":   self._feed_tok is not None,
-            "last_error":   self._last_error,
-            "credentials":  self.credentials_present(),
+            "logged_in":              self._logged_in,
+            "client_id":              self._client_id,
+            "session_age_s":          age,
+            "token_present":          self._jwt is not None,
+            "feed_token":             self._feed_tok is not None,
+            "last_error":             self._last_error,
+            "credentials":            self.credentials_present(),
+            "auth_cooldown_remaining_s": round(auth_cooldown_remaining, 1),
         }
 
 
