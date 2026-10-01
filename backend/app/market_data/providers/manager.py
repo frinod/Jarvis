@@ -152,13 +152,18 @@ class ProviderManager:
         for p in self._providers:
             try:
                 s = await p.get_status()
-                statuses.append({
+                entry = {
                     "name":       s.name,
                     "available":  s.available,
                     "logged_in":  s.logged_in,
                     "priority":   p.priority,
                     "last_error": s.last_error,
-                })
+                }
+                # Attach circuit breaker state for Angel One
+                if p.name == "angel_one":
+                    from app.market_data.providers.angel_one import get_circuit_breaker_status
+                    entry["circuit_breaker"] = get_circuit_breaker_status()
+                statuses.append(entry)
             except Exception as e:
                 statuses.append({"name": p.name, "error": str(e)})
         return statuses

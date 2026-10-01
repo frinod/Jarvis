@@ -307,6 +307,20 @@ async def market_regime(force: bool = False):
     return await get_market_regime(force_refresh=force)
 
 
+@router.get("/market/session")
+async def market_session():
+    """Canonical NSE session state — open/closed/pre/post/weekend/holiday."""
+    from app.market_data.session import session_payload
+    return session_payload()
+
+
+@router.get("/stocks/deep-intelligence/{symbol}")
+async def deep_stock_intelligence(symbol: str, horizon: int = 30):
+    """Single endpoint: forecast + regime + MTF + news + fundamentals + financials + shareholding + peers."""
+    from app.api.deep_intelligence import deep_intelligence
+    return await deep_intelligence(symbol, horizon=horizon)
+
+
 @router.get("/market/mtf/{symbol}")
 async def mtf_analysis(symbol: str):
     """Multi-timeframe analysis — 1h/4h/1d confluence for a symbol."""

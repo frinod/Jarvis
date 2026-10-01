@@ -77,6 +77,10 @@ class Settings(BaseSettings):
     sprag_api_key: Optional[str] = None
     sprag_base_url: str = "https://api.sprag.ai/v1"
 
+    # Angel One circuit breaker
+    angel_rate_limit_cooldown_seconds: int = 45
+    angel_login_failure_cooldown_seconds: int = 30
+
     class Config:
         env_file = _ENV_FILE
         env_file_encoding = "utf-8"

@@ -24,10 +24,20 @@ import logging
 import time
 from typing import List, Optional, Dict, Any
 
+import asyncio
+
 from app.market_data.providers.base import Interval, CandleResult, Quote
 from app.market_data.providers.manager import get_manager
 from app.market_data.cache import get_cache
 from app.market_data.validator import validate_candles, candles_to_legacy_dicts
+
+# ── Single-flight registry ────────────────────────────────────
+# Maps inflight_key → (asyncio.Event, result_holder list) so concurrent
+# identical requests share one upstream fetch.
+# The Event is set when the fetch completes; result_holder[0] holds the result.
+# Process-local only — does not protect across multiple uvicorn workers.
+_INFLIGHT: dict = {}          # key → (asyncio.Event, list)
+_INFLIGHT_LOCK = asyncio.Lock()
 
 log = logging.getLogger(__name__)
 
@@ -81,24 +91,35 @@ async def fetch_candles(
     if iv is None:
         return {"error": f"Unknown interval: {interval}", "symbol": symbol}
 
+    # PHASE-4 FIX: determine explicit_range BEFORE filling defaults.
+    # Old code set explicit_range after from_ts was already filled,
+    # making it always True and bypassing the snapshot cache entirely.
+    # Migration note: old lines were:
+    #   now_ms = int(time.time() * 1000)
+    #   if to_ts is None: to_ts = now_ms
+    #   if from_ts is None: from_ts = to_ts - days * 24 * 3600 * 1000
+    #   explicit_range = (from_ts is not None)  # ← always True — BUG
+    explicit_range = (from_ts is not None or to_ts is not None)
+
     now_ms = int(time.time() * 1000)
     if to_ts is None:
         to_ts = now_ms
     if from_ts is None:
         from_ts = to_ts - days * 24 * 3600 * 1000
+
+    # For snapshot (days=) requests, bucket to_ts to the cache TTL window
+    # so concurrent calls within the same TTL period share the same inflight key.
+    if not explicit_range:
+        from app.market_data.cache import _CANDLE_TTL, TTL_CANDLE_5M
+        ttl_ms = _CANDLE_TTL.get(interval, TTL_CANDLE_5M) * 1000
+        to_ts_bucketed = (to_ts // ttl_ms) * ttl_ms
+        from_ts = to_ts_bucketed - days * 24 * 3600 * 1000
+        to_ts   = to_ts_bucketed
 
     cache = get_cache()
-    explicit_range = (from_ts is not None)  # caller specified exact range
-
-    now_ms = int(time.time() * 1000)
-    if to_ts is None:
-        to_ts = now_ms
-    if from_ts is None:
-        from_ts = to_ts - days * 24 * 3600 * 1000
 
     # Snapshot cache: hit when same symbol+interval+days requested within TTL.
-    # Covers the common case where TA, forecast, and MTF all call fetch_candles
-    # for the same stock within seconds of each other.
+    # Now reachable for normal days= requests thanks to the explicit_range fix.
     if not explicit_range:
         snap = cache.get_snapshot(symbol, interval, days)
         if snap:
@@ -109,12 +130,38 @@ async def fetch_candles(
     if cached:
         return {**cached, "cached": True}
 
-    # Fetch from provider
+    # PHASE-5: Single-flight deduplication.
+    # Acquire lock, check/register atomically, then release before awaiting.
+    inflight_key = f"{symbol}:{interval}:{from_ts}:{to_ts}"
+    async with _INFLIGHT_LOCK:
+        if inflight_key in _INFLIGHT:
+            event, holder = _INFLIGHT[inflight_key]
+            is_fetcher = False
+        else:
+            event  = asyncio.Event()
+            holder = [None]   # holder[0] will be set to the result dict
+            _INFLIGHT[inflight_key] = (event, holder)
+            is_fetcher = True
+
+    if not is_fetcher:
+        # Wait for the designated fetcher to finish
+        await event.wait()
+        result_val = holder[0]
+        if result_val is None:
+            return {"error": "inflight_fetch_failed", "symbol": symbol}
+        return {**result_val, "cached": True}
+
+    # We are the designated fetcher for this key
     mgr    = get_manager()
     result = await mgr.fetch_candles(symbol, iv, from_ts, to_ts)
 
     if not result.ok:
-        return {"error": result.error or "fetch_failed", "symbol": symbol}
+        out = {"error": result.error or "fetch_failed", "symbol": symbol}
+        async with _INFLIGHT_LOCK:
+            _INFLIGHT.pop(inflight_key, None)
+        holder[0] = None
+        event.set()
+        return out
 
     # Validate
     quality_score = 100
@@ -126,12 +173,17 @@ async def fetch_candles(
         quality_score   = report["quality_score"]
         warnings        = report["warnings"]
         if not report["usable"]:
-            return {
+            out = {
                 "error":    "insufficient_clean_data",
                 "symbol":   symbol,
                 "quality":  quality_score,
                 "warnings": warnings,
             }
+            async with _INFLIGHT_LOCK:
+                _INFLIGHT.pop(inflight_key, None)
+            holder[0] = None
+            event.set()
+            return out
 
     out = {
         "symbol":   symbol,
@@ -144,7 +196,15 @@ async def fetch_candles(
 
     # Store in both caches
     cache.set_candles(symbol, interval, from_ts, to_ts, out)
-    cache.set_snapshot(symbol, interval, days, out)
+    if not explicit_range:
+        cache.set_snapshot(symbol, interval, days, out)
+
+    # Signal all waiters and clean up
+    holder[0] = out
+    async with _INFLIGHT_LOCK:
+        _INFLIGHT.pop(inflight_key, None)
+    event.set()
+
     return out
 
 

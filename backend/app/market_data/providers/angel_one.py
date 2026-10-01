@@ -27,18 +27,54 @@ from app.market_data import instruments
 
 log = logging.getLogger(__name__)
 
-# ── Rate-limit guard ──────────────────────────────────────────
+# ── Rate-limit guard + circuit breaker ───────────────────────
 # Angel One's getCandleData endpoint rate-limits aggressively.
-# Serialise all chunk fetches through a single semaphore and
-# back off exponentially when a rate-limit response is received.
+# Serialise all chunk fetches through a single semaphore.
+# On a confirmed rate-limit response, trip the circuit breaker
+# and stop all Angel One calls until cooldown expires.
+# Cooldown is configurable via ANGEL_RATE_LIMIT_COOLDOWN_SECONDS.
 _CHUNK_SEM = asyncio.Semaphore(1)   # one in-flight candle request at a time
-_RATE_LIMIT_BACKOFF_SECS = 5.0      # initial back-off on rate-limit hit
+_RATE_LIMIT_BACKOFF_SECS = 5.0      # initial back-off on transient errors
 _INTER_CHUNK_SLEEP_SECS  = 0.4      # minimum gap between chunks
 
+# Circuit breaker state — module-level so it is shared across all instances
+_rate_limit_until: float = 0.0   # epoch seconds; 0 = not in cooldown
 
-def _is_rate_limit_error(exc: Exception) -> bool:
-    msg = str(exc).lower()
-    return "access denied" in msg or "rate" in msg or "exceeding" in msg
+
+def _get_cooldown_secs() -> int:
+    try:
+        from app.core.config import settings
+        return settings.angel_rate_limit_cooldown_seconds
+    except Exception:
+        return 45
+
+
+def is_in_rate_limit_cooldown() -> bool:
+    return time.time() < _rate_limit_until
+
+
+def trip_rate_limit_cooldown():
+    global _rate_limit_until
+    secs = _get_cooldown_secs()
+    _rate_limit_until = time.time() + secs
+    log.warning(
+        f"[AngelOne] Circuit breaker TRIPPED — cooldown {secs}s "
+        f"(until {_rate_limit_until:.0f})"
+    )
+
+
+def get_circuit_breaker_status() -> dict:
+    remaining = max(0.0, _rate_limit_until - time.time())
+    return {
+        "in_cooldown":          remaining > 0,
+        "cooldown_remaining_s": round(remaining, 1),
+        "cooldown_until":       _rate_limit_until if remaining > 0 else None,
+    }
+
+
+def _is_rate_limit_error(exc_or_msg) -> bool:
+    msg = str(exc_or_msg).lower()
+    return "access denied" in msg or "rate" in msg or "exceeding" in msg or "too many" in msg
 
 
 # ── Interval mapping: Interval → Angel One string ─────────────
@@ -88,6 +124,9 @@ class AngelOneProvider(MarketDataProvider):
         return ok
 
     async def is_available(self) -> bool:
+        if is_in_rate_limit_cooldown():
+            log.debug("[AngelOne] Skipping — circuit breaker in cooldown")
+            return False
         return self._session.is_logged_in
 
     async def get_status(self) -> ProviderStatus:
@@ -235,7 +274,14 @@ class AngelOneProvider(MarketDataProvider):
             "todate":      to_str,
         }
 
+        # Abort immediately if circuit breaker is tripped
+        if is_in_rate_limit_cooldown():
+            log.debug("[AngelOne] _fetch_chunk skipped — circuit breaker active")
+            return []
+
         backoff = _RATE_LIMIT_BACKOFF_SECS
+        # Rate-limit errors: trip breaker immediately, no retries.
+        # Transient network errors: bounded retry with backoff (max 2 retries).
         for attempt in range(3):
             async with _CHUNK_SEM:
                 try:
@@ -246,6 +292,10 @@ class AngelOneProvider(MarketDataProvider):
                     )
                     if not resp or resp.get("status") is not True:
                         msg = resp.get("message", "no message") if resp else "null response"
+                        # Rate-limit detected in response message
+                        if _is_rate_limit_error(msg):
+                            trip_rate_limit_cooldown()
+                            return []
                         if "token" in msg.lower() or "unauthori" in msg.lower():
                             await self._session.invalidate()
                             if await self._session.ensure_logged_in():
@@ -275,13 +325,12 @@ class AngelOneProvider(MarketDataProvider):
 
                 except Exception as e:
                     if _is_rate_limit_error(e):
-                        log.warning(
-                            f"[AngelOne] Rate-limit on attempt {attempt+1} "
-                            f"— backing off {backoff:.1f}s"
-                        )
-                        await asyncio.sleep(backoff)
-                        backoff *= 2   # exponential: 5s → 10s → 20s
+                        # Confirmed rate-limit — trip breaker, stop retrying
+                        trip_rate_limit_cooldown()
+                        log.warning(f"[AngelOne] Rate-limit exception — breaker tripped, no more retries")
+                        return []
                     else:
+                        # Transient error — bounded retry with backoff
                         log.warning(f"[AngelOne] Chunk fetch attempt {attempt+1} failed: {e}")
                         if attempt < 2:
                             await asyncio.sleep(0.5 * (attempt + 1))

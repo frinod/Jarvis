@@ -31,6 +31,9 @@ class JarvisOrchestrator:
         self.llm = LLMRouter()
         self._history: list = []  # [(role, content), ...] max 40 turns
         self.ai_runtime = None   # set by main.py startup after LLMGateway is built
+        # Control plane — gathers read-only evidence before LLM call
+        from app.core.control_plane import JarvisControlPlane
+        self.control_plane = JarvisControlPlane()
 
     # ─── Conversation History ─────────────────────────────────────────
 
@@ -426,6 +429,15 @@ class JarvisOrchestrator:
             return reply
 
         live_context = await self._get_live_context(user_input, selected_stock)
+        # Control plane: gather structured evidence (session, forecast, regime, MTF)
+        # and append to live_context so the LLM has one complete intelligence packet.
+        try:
+            control = await self.control_plane.prepare(user_input, user_id, selected_stock)
+            if control.evidence:
+                cp_context = control.prompt_context()
+                live_context = (live_context + "\n\nJARVIS CONTROL-PLANE EVIDENCE:\n" + cp_context).strip()
+        except Exception as _cp_err:
+            print(f"[JARVIS] Control plane error (non-fatal): {_cp_err}")
         trade_context = self._load_trade_context()
         modifiers = self.personality.get_response_modifiers()
         system_prompt = self._build_system_prompt(modifiers, live_context, trade_context)
@@ -477,7 +489,15 @@ class JarvisOrchestrator:
             yield fallback
             full_response = fallback
         else:
-            live_context = await self._get_live_context(user_input, selected_stock)
+                live_context = await self._get_live_context(user_input, selected_stock)
+            # Control plane: gather structured evidence once at request start
+            try:
+                control = await self.control_plane.prepare(user_input, user_id, selected_stock)
+                if control.evidence:
+                    cp_context = control.prompt_context()
+                    live_context = (live_context + "\n\nJARVIS CONTROL-PLANE EVIDENCE:\n" + cp_context).strip()
+            except Exception as _cp_err:
+                print(f"[JARVIS] Control plane error (non-fatal): {_cp_err}")
             trade_context = self._load_trade_context()
             modifiers = self.personality.get_response_modifiers()
             system_prompt = self._build_system_prompt(modifiers, live_context, trade_context)
